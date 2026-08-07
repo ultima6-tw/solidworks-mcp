@@ -17,6 +17,8 @@ The connected AI client gets a broad tool set covering sketching, solid features
 - **A readable design tree** — read the timeline as structured data, rename features and sketches to say what they're *for*, and group them into folders, so the model a human opens is one they can follow
 - **State tracking** — every feature, sketch, and entity gets a stable ID, scoped per document, so multi-part + assembly sessions stay coherent
 
+- **C# escape hatch** — compile small snippets against strongly typed SolidWorks interops, then execute trusted code in a fresh, target-checked worker when the structured tools do not cover an operation
+
 ## What it can't do
 
 - **Taste** - Claude does *not* replace design reviews, or having a sense for how things should be done.
@@ -58,17 +60,23 @@ Then restart the configured client completely and ask it to *"create a 50mm cube
 
 **To uninstall:** delete `%LOCALAPPDATA%\SolidWorksMCP`, remove the `"solidworks"` entry from `%APPDATA%\Claude\claude_desktop_config.json` if configured, and run `codex mcp remove solidworks` if configured for Codex.
 
+Release installs also pick up the self-contained C# worker when the release
+contains `solidworks-csharp-worker-win-x64.zip`; all semantic tools continue to
+work if that optional asset is absent.
+
 ### Manual install (for developers)
 
 Prerequisites (in addition to the requirements above):
 
 - **[Python](https://www.python.org/downloads/) 3.10 or later** — check "Add python.exe to PATH" during install
 - **[Git](https://git-scm.com/downloads/win)** (or download the repo as a ZIP from GitHub instead)
+- **[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)** only when building the optional C# worker from source
 
 ```powershell
 git clone https://github.com/HarrierPigeon/Solidworks-MCP-Server.git
 cd Solidworks-MCP-Server
 pip install -r requirements.txt
+powershell -File scripts/build_csharp_worker.ps1
 ```
 
 (Or `pip install -e .` for an editable package install.)
@@ -294,6 +302,18 @@ Every tool is prefixed `solidworks_` (e.g. `solidworks_sketch_circle`). Dimensio
 </details>
 
 <details>
+<summary><strong>Trusted-local C# extensibility</strong></summary>
+
+| Tool | Description |
+|---|---|
+| `solidworks_compile_csharp` | Compile statements with Roslyn, returning snippet-relative diagnostics and resolved/candidate SolidWorks API signatures without starting SolidWorks |
+| `solidworks_execute_csharp` | Compile and run against an identity-checked active document; rebuild, inspect, diff, and retain a local audit record by default |
+
+These tools are an escape hatch, not a replacement for normalized semantic tools and not a security sandbox. Exact source and outcomes are retained locally for later wrapper/tool analysis. See [Trusted-local C# execution](docs/CSharp-Execution.md).
+
+</details>
+
+<details>
 <summary><strong>Batching</strong></summary>
 
 | Tool | Description |
@@ -311,6 +331,12 @@ Claude  →  MCP tool call  →  server.py dispatch  →  solidworks/ module  �
 - The server connects to a running SolidWorks instance (or launches one) via COM (`pywin32`).
 - Every created object gets a **stable ID** (`feat:Boss-Extrude1`, `sketch:Sketch1`, `comp:bracket-1`) tracked per document, so Claude can refer back to things it built — even across multiple parts and an assembly in one session.
 - Tools return structured JSON, and geometry-query tools return coordinates that can be fed directly into selection-based tools (fillet this edge, sketch on that face).
+
+C# execution uses a separate, fresh worker process. It pins the SolidWorks
+process and active document before invoking trusted code, then normally
+rebuilds, inspects, and diffs the result. Compile and execution attempts are
+kept in a local SQLite history for later wrapper/tool analysis; nothing is
+uploaded automatically.
 
 ## Troubleshooting
 
@@ -338,11 +364,16 @@ python test.py            # full test suite (needs a live SolidWorks)
 python test.py --list     # list tests; --category / --test / --gui to filter
 python dev_server.py      # hot-reload dev server (pip install watchdog)
 python clean.py           # close all open SolidWorks documents
+python -m unittest tests.test_csharp_history tests.test_csharp_history_export tests.test_csharp_execution tests.test_csharp_worker_integration
+python scripts/export_csharp_history.py  # summarize repeated snippets/API symbols
 ```
 
 There is no mock of the COM layer — tests drive a real SolidWorks instance. `tests/agent_capability_tests.md` additionally contains 46 copy-paste prompts for end-to-end testing through Claude itself. Architecture notes live in [CLAUDE.md](CLAUDE.md).
 
 Contributions welcome — please open an issue or PR.
+
+Detailed references: [97-tool capability audit](docs/tool-audit.md) and
+[trusted-local C# execution](docs/CSharp-Execution.md).
 
 ## Known limitations
 

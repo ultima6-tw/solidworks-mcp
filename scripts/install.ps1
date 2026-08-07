@@ -119,12 +119,17 @@ Write-Ok "uv: $uv"
 # --- 2. Download the server ------------------------------------------------
 Write-Step 'Downloading SolidWorks MCP Server...'
 $zipUrl = "https://github.com/$Repo/archive/refs/heads/main.zip"
+$workerAssetUrl = $null
 try {
     $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
     if ($release.zipball_url) {
         $zipUrl = $release.zipball_url
         Write-Ok "Latest release: $($release.tag_name)"
     }
+    $workerAsset = $release.assets | Where-Object {
+        $_.name -eq 'solidworks-csharp-worker-win-x64.zip'
+    } | Select-Object -First 1
+    if ($workerAsset) { $workerAssetUrl = $workerAsset.browser_download_url }
 } catch {
     Write-Ok 'No published release found; using latest main branch.'
 }
@@ -147,12 +152,87 @@ if (Test-Path (Join-Path $AppDir 'workspace')) {
     if (Test-Path $workspaceKeep) { Remove-Item $workspaceKeep -Recurse -Force }
     Move-Item (Join-Path $AppDir 'workspace') $workspaceKeep
 }
+# Preserve a previously validated optional worker until its replacement has
+# been downloaded, probed, and installed successfully.
+$workerKeep = $null
+$existingWorkerDir = Join-Path $AppDir 'worker\publish'
+$existingWorkerExe = Join-Path $existingWorkerDir 'SolidWorks.CSharpWorker.exe'
+if (Test-Path -LiteralPath $existingWorkerExe) {
+    $workerKeep = Join-Path $InstallDir 'worker-keep'
+    if (Test-Path -LiteralPath $workerKeep) {
+        Remove-Item -LiteralPath $workerKeep -Recurse -Force
+    }
+    Move-Item -LiteralPath $existingWorkerDir -Destination $workerKeep
+}
 if (Test-Path $AppDir) { Remove-Item $AppDir -Recurse -Force }
 Move-Item $srcDir.FullName $AppDir
 if ($workspaceKeep) { Move-Item $workspaceKeep (Join-Path $AppDir 'workspace') }
 Remove-Item $tmpZip -Force
 Remove-Item $tmpExtract -Recurse -Force
 Write-Ok "Installed to: $AppDir"
+
+$workerInstalled = $false
+if ($workerAssetUrl) {
+    Write-Step 'Installing the SolidWorks C# snippet worker...'
+    $workerToken = [Guid]::NewGuid().ToString('N')
+    $workerZip = Join-Path $env:TEMP "solidworks-csharp-worker-$workerToken.zip"
+    $workerStage = Join-Path $env:TEMP "solidworks-csharp-worker-$workerToken"
+    $workerDir = Join-Path $AppDir 'worker\publish'
+    try {
+        Invoke-WebRequest $workerAssetUrl -OutFile $workerZip -UseBasicParsing
+        Expand-Archive $workerZip -DestinationPath $workerStage
+        $stagedWorker = Join-Path $workerStage 'SolidWorks.CSharpWorker.exe'
+        if (-not (Test-Path -LiteralPath $stagedWorker)) {
+            throw 'Worker archive did not contain SolidWorks.CSharpWorker.exe at its root.'
+        }
+
+        # Compile-only probe verifies architecture, protocol, Roslyn, and the
+        # installed SolidWorks interop resolution without launching SolidWorks.
+        $probeRequest = @{
+            protocolVersion = 1
+            operation = 'compile'
+            executionId = 'installer-health-check'
+            code = 'result = 1;'
+            timeoutMs = 30000
+        } | ConvertTo-Json -Compress
+        $probeJson = $probeRequest | & $stagedWorker
+        if ($LASTEXITCODE -ne 0) { throw 'Worker health check exited unsuccessfully.' }
+        $probe = $probeJson | ConvertFrom-Json
+        if ($probe.protocolVersion -ne 1 -or -not $probe.compiled) {
+            throw 'Worker health check did not return a successful protocol-v1 compilation.'
+        }
+
+        New-Item -ItemType Directory -Force (Split-Path $workerDir -Parent) | Out-Null
+        if (Test-Path -LiteralPath $workerDir) {
+            Remove-Item -LiteralPath $workerDir -Recurse -Force
+        }
+        Move-Item -LiteralPath $workerStage -Destination $workerDir
+        $workerInstalled = $true
+        Write-Ok 'C# snippet worker ready.'
+    } catch {
+        Write-Note "Optional C# worker installation failed: $($_.Exception.Message)"
+        Write-Note 'Continuing with all semantic MCP tools available.'
+    } finally {
+        if (Test-Path -LiteralPath $workerZip) { Remove-Item -LiteralPath $workerZip -Force }
+        if (Test-Path -LiteralPath $workerStage) {
+            Remove-Item -LiteralPath $workerStage -Recurse -Force
+        }
+    }
+}
+
+if ($workerInstalled) {
+    if ($workerKeep -and (Test-Path -LiteralPath $workerKeep)) {
+        Remove-Item -LiteralPath $workerKeep -Recurse -Force
+    }
+} elseif ($workerKeep -and (Test-Path -LiteralPath $workerKeep)) {
+    $workerDir = Join-Path $AppDir 'worker\publish'
+    New-Item -ItemType Directory -Force (Split-Path $workerDir -Parent) | Out-Null
+    Move-Item -LiteralPath $workerKeep -Destination $workerDir
+    Write-Note 'Kept the previously installed C# worker.'
+} else {
+    Write-Note 'This download has no usable prebuilt C# worker asset.'
+    Write-Note 'Semantic tools are ready; see docs/CSharp-Execution.md to build the optional worker.'
+}
 
 # --- 3. Python environment -------------------------------------------------
 Write-Step 'Setting up Python environment (uv downloads Python if needed)...'

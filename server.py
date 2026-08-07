@@ -10,6 +10,7 @@ from typing import Any
 import logging
 import sys
 import asyncio
+import copy
 from pathlib import Path
 import pythoncom
 
@@ -30,7 +31,9 @@ from solidworks import (
     AssemblyTools,
     ConfigurationTools,
     FeatureTreeTools,
+    CSharpExecutionTools,
 )
+from solidworks.csharp_execution import redacted_code_summary
 
 # Configure logging
 _log_path = Path(__file__).parent / 'solidworks_mcp.log'
@@ -43,6 +46,27 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+_CSHARP_TOOLS = {"solidworks_compile_csharp", "solidworks_execute_csharp"}
+
+
+def _arguments_for_log(name: str, arguments: Any) -> Any:
+    """Copy arguments and redact snippet source before normal file logging."""
+    if not isinstance(arguments, dict):
+        return arguments
+    safe = copy.deepcopy(arguments)
+    if name in _CSHARP_TOOLS and "code" in safe:
+        safe["code"] = redacted_code_summary(safe["code"])
+    elif name == "solidworks_batch":
+        calls = safe.get("calls") or []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            tool_name = call.get("tool")
+            tool_args = call.get("args")
+            if tool_name in _CSHARP_TOOLS and isinstance(tool_args, dict) and "code" in tool_args:
+                tool_args["code"] = redacted_code_summary(tool_args["code"])
+    return safe
 
 
 class SolidWorksMCPServer:
@@ -68,6 +92,7 @@ class SolidWorksMCPServer:
         self.assembly = AssemblyTools(self.connection, self.tracker)
         self.configurations = ConfigurationTools(self.connection, self.tracker)
         self.feature_tree = FeatureTreeTools(self.connection, self.tracker)
+        self.csharp_execution = CSharpExecutionTools(self.connection, self.tracker)
 
         # All modules (order matters for tool listing)
         self._modules = [
@@ -85,6 +110,7 @@ class SolidWorksMCPServer:
             self.assembly,
             self.configurations,
             self.feature_tree,
+            self.csharp_execution,
         ]
 
         # Build dispatch map: tool_name -> module
@@ -145,10 +171,11 @@ class SolidWorksMCPServer:
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-            logger.info(f"Tool called: {name} with arguments: {arguments}")
+            logger.info("Tool called: %s with arguments: %s", name,
+                        _arguments_for_log(name, arguments))
 
             # Ensure connection
-            if not self.connection.app:
+            if self._requires_connection(name, arguments) and not self.connection.app:
                 if not self.connection.connect():
                     return [TextContent(
                         type="text",
@@ -179,6 +206,20 @@ class SolidWorksMCPServer:
                 error_msg = f"❌ Error in {name}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
                 return [TextContent(type="text", text=error_msg)]
+
+    @staticmethod
+    def _requires_connection(name: str, arguments: Any) -> bool:
+        """Compilation is useful even when SolidWorks is not running."""
+        if name in _CSHARP_TOOLS:
+            return False
+        if name == "solidworks_batch" and isinstance(arguments, dict):
+            calls = arguments.get("calls") or []
+            return any(
+                not isinstance(call, dict)
+                or call.get("tool") not in _CSHARP_TOOLS
+                for call in calls
+            )
+        return True
 
     def _route_tool(self, name: str, arguments: Any) -> str:
         """Route tool calls to appropriate module"""

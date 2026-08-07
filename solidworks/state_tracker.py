@@ -474,6 +474,37 @@ class StateTracker:
         logger.info(f"Registered ref geometry: {ref_id} ({ref_type})")
         return ref_id
 
+    def reconcile_live_feature(self, sw_name: str, feature_type: str) -> tuple[str, bool]:
+        """Track a top-level feature discovered after out-of-band C# execution.
+
+        Snippets can create real SolidWorks objects without going through a
+        semantic tool.  Preserve the correct ID namespace for sketches and
+        reference geometry, but do not invent sketch entities or parameters we
+        did not observe.  Returns ``(id, created)``.
+        """
+        existing = self.get_id_by_sw_name(sw_name)
+        if existing:
+            return existing, False
+
+        scope = self._scope()
+        if feature_type == "ProfileFeature":
+            sketch_id = f"sketch:{sw_name}"
+            scope.sketches[sketch_id] = SketchRecord(
+                sketch_id=sketch_id, sw_name=sw_name, plane="unknown"
+            )
+            logger.info(f"Reconciled live sketch: {sketch_id}")
+            return sketch_id, True
+
+        ref_types = {
+            "RefPlane": "plane",
+            "RefAxis": "axis",
+            "RefPoint": "point",
+            "CoordSys": "coordinate_system",
+        }
+        if feature_type in ref_types:
+            return self.register_ref_geometry(sw_name, ref_types[feature_type]), True
+        return self.register_feature(sw_name, feature_type), True
+
     # --- Assembly tracking ---
 
     def register_component(self, sw_name: str, file_path: str,

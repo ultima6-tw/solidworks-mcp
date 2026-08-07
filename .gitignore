@@ -6,6 +6,11 @@ __pycache__/
 venv/
 build/
 dist/
+worker/publish/
+worker/**/bin/
+worker/**/obj/
+snippet_history.sqlite3*
+snippet_exports/
 
 # Runtime output
 *.log
