@@ -7,10 +7,30 @@ import win32com.client
 import pythoncom
 import glob
 import logging
+import os
 import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# swUserPreferenceStringValue_e values from the installed SOLIDWORKS API.
+# These enum values are stable API identifiers, not localized UI strings.
+_DEFAULT_TEMPLATE_PREFS = {
+    "part": 8,      # swDefaultTemplatePart
+    "assembly": 9,  # swDefaultTemplateAssembly
+    "drawing": 10,  # swDefaultTemplateDrawing
+}
+_TEMPLATE_EXTENSIONS = {
+    "part": ".prtdot",
+    "assembly": ".asmdot",
+    "drawing": ".drwdot",
+}
+_PREFERRED_TEMPLATE_NAMES = {
+    "part": ("Part.prtdot", "gb_part.prtdot"),
+    "assembly": ("Assembly.asmdot", "gb_assembly.asmdot"),
+    "drawing": ("Drawing.drwdot",),
+}
 
 
 class SolidWorksConnection:
@@ -20,6 +40,7 @@ class SolidWorksConnection:
         self.app = None
         self.template_path = None
         self.assembly_template_path = None
+        self.drawing_template_path = None
         
     def connect(self) -> bool:
         """Connect to SolidWorks application"""
@@ -77,37 +98,106 @@ class SolidWorksConnection:
                     return hit
         return hits[0]
 
+    def _user_default_template(self, kind: str) -> Optional[str]:
+        """Return a usable SOLIDWORKS default template preference.
+
+        Some installations return virtual placeholders such as
+        ``~BLANK_PART_TEMPLATE.prtdot``.  NewDocument cannot consume those as
+        filesystem paths, so only an existing file with the expected suffix
+        is accepted here.
+        """
+        if not self.app:
+            return None
+        try:
+            path = str(self.app.GetUserPreferenceStringValue(
+                _DEFAULT_TEMPLATE_PREFS[kind]
+            ) or "").strip()
+        except Exception as exc:
+            logger.info("Could not read the %s default template: %s", kind, exc)
+            return None
+
+        extension = _TEMPLATE_EXTENSIONS[kind]
+        if path and path.lower().endswith(extension) and os.path.isfile(path):
+            logger.info("Found %s template from SOLIDWORKS preferences: %s", kind, path)
+            return path
+        if path:
+            logger.info("Ignoring unusable %s default template preference: %s", kind, path)
+        return None
+
+    def _template_directories(self) -> list[str]:
+        """Return installed template directories, current SW version first."""
+        program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+        pattern = os.path.join(
+            program_data, "SOLIDWORKS", "SOLIDWORKS *", "templates"
+        )
+        roots = [p for p in glob.glob(pattern) if os.path.isdir(p)]
+        year = self._sw_year()
+        roots.sort(key=lambda p: (0 if year and str(year) in p else 1, p.casefold()))
+        return roots
+
+    def _scan_template(self, kind: str) -> Optional[str]:
+        """Find a normal document template, falling back to MBD last."""
+        extension = _TEMPLATE_EXTENSIONS[kind]
+        roots = self._template_directories()
+
+        # Prefer conventional names in each version's root directory, then any
+        # other root-level template.  This deliberately avoids MBD templates.
+        for root in roots:
+            root_files = sorted(
+                (p for p in glob.glob(os.path.join(root, f"*{extension}"))
+                 if os.path.isfile(p)),
+                key=str.casefold,
+            )
+            by_name = {os.path.basename(p).casefold(): p for p in root_files}
+            for preferred in _PREFERRED_TEMPLATE_NAMES[kind]:
+                hit = by_name.get(preferred.casefold())
+                if hit:
+                    logger.info("Found %s template in version root: %s", kind, hit)
+                    return hit
+            if root_files:
+                logger.info("Found %s template in version root: %s", kind, root_files[0])
+                return root_files[0]
+
+        # MBD templates carry size-specific semantics, so use one only when no
+        # ordinary root template exists in any installed version.
+        for root in roots:
+            mbd_files = sorted(
+                (p for p in glob.glob(os.path.join(root, "MBD", "**", f"*{extension}"),
+                                      recursive=True)
+                 if os.path.isfile(p)),
+                key=str.casefold,
+            )
+            if mbd_files:
+                logger.warning("Using MBD %s template fallback: %s", kind, mbd_files[0])
+                return mbd_files[0]
+        return None
+
+    def _find_template_kind(self, kind: str) -> Optional[str]:
+        template = self._user_default_template(kind) or self._scan_template(kind)
+        if not template:
+            logger.error("No %s template found", kind.capitalize())
+        return template
+
     def find_template(self) -> Optional[str]:
         """Find Part template automatically"""
         if self.template_path:
             return self.template_path
-
-        self.template_path = self._pick_template([
-            r"C:\ProgramData\SOLIDWORKS\SOLIDWORKS *\templates\Part.prtdot",
-            r"C:\ProgramData\SOLIDWORKS\SOLIDWORKS *\templates\Part.PRTDOT",
-        ])
-        if self.template_path:
-            logger.info(f"Found template: {self.template_path}")
-            return self.template_path
-
-        logger.error("No Part template found")
-        return None
+        self.template_path = self._find_template_kind("part")
+        return self.template_path
 
     def find_assembly_template(self) -> Optional[str]:
         """Find Assembly template automatically"""
         if self.assembly_template_path:
             return self.assembly_template_path
+        self.assembly_template_path = self._find_template_kind("assembly")
+        return self.assembly_template_path
 
-        self.assembly_template_path = self._pick_template([
-            r"C:\ProgramData\SOLIDWORKS\SOLIDWORKS *\templates\Assembly.asmdot",
-            r"C:\ProgramData\SOLIDWORKS\SOLIDWORKS *\templates\Assembly.ASMDOT",
-        ])
-        if self.assembly_template_path:
-            logger.info(f"Found assembly template: {self.assembly_template_path}")
-            return self.assembly_template_path
-
-        logger.error("No Assembly template found")
-        return None
+    def find_drawing_template(self) -> Optional[str]:
+        """Find Drawing template automatically."""
+        if self.drawing_template_path:
+            return self.drawing_template_path
+        self.drawing_template_path = self._find_template_kind("drawing")
+        return self.drawing_template_path
 
     def create_new_assembly(self):
         """Create a brand new assembly document"""
@@ -185,6 +275,8 @@ class SolidWorksConnection:
         logger.warning("Attempting to reconnect to SolidWorks...")
         self.app = None
         self.template_path = None
+        self.assembly_template_path = None
+        self.drawing_template_path = None
         # Brief pause to let SolidWorks stabilize if it just restarted
         time.sleep(2)
         return self.connect()

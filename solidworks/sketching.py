@@ -728,12 +728,6 @@ class SketchingTools:
         Otherwise, uses the named reference plane ("Front", "Top", or "Right").
         Face-based sketches are required for cut-extrusions to work.
         """
-        plane_map = {
-            "Front": "Front Plane",
-            "Top": "Top Plane",
-            "Right": "Right Plane"
-        }
-
         face_mode = "faceX" in args and "faceY" in args and "faceZ" in args
 
         # Check for active document
@@ -823,9 +817,10 @@ class SketchingTools:
                              f"{face_echo.get('orientation', '?')}, "
                              f"area {face_echo.get('area_mm2', '?')} mm2")
         else:
+            from .selection_helpers import resolve_plane_feature
+
             plane_name = args.get("plane", "Front")
-            plane_feature_name = plane_map.get(plane_name, plane_name)
-            plane_feature = doc.FeatureByName(plane_feature_name)
+            plane_feature = resolve_plane_feature(doc, plane_name)
             if not plane_feature:
                 raise Exception(
                     f"Could not find plane: {plane_name}. "

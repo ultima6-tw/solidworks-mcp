@@ -64,12 +64,6 @@ SELECT_TYPE_NAMES = {
 # swComponentSuppressionState_e: 0/1 suppressed-ish, 2/3 resolved
 _SUPPRESSED_STATES = (0, 1)
 
-STANDARD_PLANES = {
-    "FRONT": "Front Plane",
-    "TOP": "Top Plane",
-    "RIGHT": "Right Plane",
-}
-
 
 class AssemblyTools:
     """Assembly creation, component insertion, mating, and assembly queries."""
@@ -281,6 +275,22 @@ class AssemblyTools:
             return name_or_id[len("comp:"):]
         return name_or_id
 
+    def _find_component(self, doc, component_name: str):
+        """Resolve an assembly component by its actual Name2 value."""
+        try:
+            component = doc.GetComponentByName(component_name)
+            if component:
+                return component
+        except Exception:
+            pass
+        try:
+            for component in (doc.GetComponents(True) or []):
+                if str(_prop(component, "Name2")) == component_name:
+                    return component
+        except Exception:
+            pass
+        return None
+
     def _component_position_mm(self, comp) -> dict:
         """Component origin translation in mm from its Transform2 matrix."""
         try:
@@ -302,14 +312,40 @@ class AssemblyTools:
                 raise Exception("Plane mate entity requires 'component'")
             comp_name = self._resolve_component_name(comp_ref)
             plane = entity["plane"].strip()
-            plane_name = STANDARD_PLANES.get(plane.upper(), plane)
-            qualified = f"{plane_name}@{comp_name}@{self._assembly_ref_title(doc)}"
-            ok = doc.Extension.SelectByID2(
-                qualified, "PLANE", 0, 0, 0, append, 1, sel.make_callout(), 0
-            )
-            if not ok:
-                raise Exception(f"Could not select plane: {qualified}")
-            return f"{plane_name}@{comp_name}"
+            plane_names = []
+
+            # Prefer the real feature name from the component model.  The
+            # assembly-qualified selection syntax still needs a name, but it
+            # no longer assumes that name is English.
+            component = self._find_component(doc, comp_name)
+            if component is not None:
+                try:
+                    component_doc = _prop(component, "GetModelDoc2")
+                    plane_feature = sel.resolve_plane_feature(component_doc, plane)
+                    if plane_feature is not None:
+                        plane_names.append(str(_prop(plane_feature, "Name")))
+                except Exception as exc:
+                    logger.info(
+                        "Could not resolve component plane dynamically for %s: %s",
+                        comp_name, exc,
+                    )
+
+            # Lightweight/suppressed components may not expose ModelDoc2.
+            # Try known aliases only as a final compatibility fallback.
+            for candidate in sel.plane_name_candidates(plane):
+                if candidate not in plane_names:
+                    plane_names.append(candidate)
+
+            attempted = []
+            for plane_name in plane_names:
+                qualified = f"{plane_name}@{comp_name}@{self._assembly_ref_title(doc)}"
+                attempted.append(qualified)
+                ok = doc.Extension.SelectByID2(
+                    qualified, "PLANE", 0, 0, 0, append, 1, sel.make_callout(), 0
+                )
+                if ok:
+                    return f"{plane_name}@{comp_name}"
+            raise Exception(f"Could not select plane; tried: {attempted}")
 
         entity_type = (entity.get("entityType") or "").upper()
         if entity_type in ("FACE", "EDGE", "VERTEX"):

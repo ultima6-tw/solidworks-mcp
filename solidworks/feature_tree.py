@@ -44,11 +44,6 @@ BOILERPLATE_TYPES = {
     "SolidBodyFolder", "EnvFolder", "InkMarkupFolder", "EqnFolder",
     "MaterialFolder", "OriginProfileFeature",
 }
-# Reference planes are scaffolding in a default part but meaningful once the
-# agent has created its own, so they are only hidden when they are the three
-# stock planes.
-STOCK_PLANES = {"Front Plane", "Top Plane", "Right Plane"}
-
 FOLDER_TYPE = "FtrFolder"
 
 # SolidWorks emits a closing pseudo-feature for every folder in the linear
@@ -353,7 +348,7 @@ class FeatureTreeTools:
         if not opts["boilerplate"]:
             if type_name in BOILERPLATE_TYPES:
                 return None
-            if type_name == "RefPlane" and name in STOCK_PLANES:
+            if type_name == "RefPlane" and name in opts.get("stock_plane_names", set()):
                 return None
 
         suppressed = self._is_suppressed(feature)
@@ -411,6 +406,9 @@ class FeatureTreeTools:
             "subfeatures": bool(args.get("includeSubFeatures", True)),
             "boilerplate": bool(args.get("includeBoilerplate", False)),
             "suppressed": bool(args.get("includeSuppressed", True)),
+            # Resolve actual document-local names from RefPlane geometry; this
+            # works for English and localized feature trees alike.
+            "stock_plane_names": set(sel.get_standard_plane_names(doc).values()),
         }
 
         tree = []
