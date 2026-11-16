@@ -13,6 +13,81 @@ from .com_utils import exit_active_sketch, resolve_tracked_name
 logger = logging.getLogger(__name__)
 
 
+def insert_boundary_feature(doc, profiles, guides, net_type, list_available=None):
+    """Create a boundary boss (net_type=1) or boundary cut (net_type=3).
+
+    SOLIDWORKS has no InsertBoundaryBoss/InsertBoundaryCut (what this module
+    used to call); boundary features are IFeatureManager.InsertNetBlend2,
+    per the SW2022 API help (sldworksapi.chm). Profiles are selected with
+    marks 8193, 16385, 24577, ... (Direction 1) and guide curves with 8194,
+    16386, ... (Direction 2), as in the official "Insert Boundary Feature"
+    example. Probed on SW2022: the feature is built correctly but the call
+    returns None, so the new feature is found by diffing the tree and the
+    body volume is checked. Returns the feature.
+    """
+    def _features():
+        out, f = [], doc.FirstFeature
+        while f is not None:
+            out.append(f)
+            f = f.GetNextFeature
+        return out
+
+    def _volume():
+        try:
+            return float(doc.Extension.CreateMassProperty.Volume) * 1e9
+        except Exception:
+            return 0.0  # no solid body yet (boundary boss as first feature)
+
+    names_before = {f.Name for f in _features()}
+    volume_before = _volume()
+    callout = sel.make_callout()
+
+    sel.clear_selection(doc)
+    for i, name in enumerate(profiles):
+        if not doc.Extension.SelectByID2(name, "SKETCH", 0, 0, 0, i > 0,
+                                         8192 * (i + 1) + 1, callout, 0):
+            available = list_available(doc) if list_available else ""
+            raise Exception(f"Could not select profile sketch: {name}. "
+                            f"Available sketches in feature tree: [{available}]")
+    for j, name in enumerate(guides):
+        if not doc.Extension.SelectByID2(name, "SKETCH", 0, 0, 0, True,
+                                         8192 * (j + 1) + 2, callout, 0):
+            raise Exception(f"Could not select guide curve sketch: {name}")
+
+    fm = doc.FeatureManager
+    for i in range(len(profiles)):
+        fm.SetNetBlendCurveData(0, i, 0, 0.0, 1.0, True)   # no end tangency
+    for j in range(len(guides)):
+        fm.SetNetBlendCurveData(1, j, 0, 0.0, 1.0, True)
+    fm.SetNetBlendDirectionData(0, 32, 0, False, False)    # global influence
+    fm.SetNetBlendDirectionData(1, 32, 0, False, False)
+
+    fm.InsertNetBlend2(
+        net_type, len(profiles), len(guides),
+        False,      # HasCenterline
+        0.0001,     # TessTolFactor
+        True,       # WantsSolid
+        True,       # MergeBody
+        True, True, # FeatureScope, AutoSelect
+        False, -1, -1, False, -1, False,   # no thin feature
+        False, -1,  # CapEnds, EndThickness
+        False, -1,  # AutoFillet, FilletRadius
+        True,       # ForceNonRational
+        False,      # CreateSolid (surfaces only)
+    )
+    sel.clear_selection(doc)
+
+    new = [f for f in _features() if f.Name not in names_before]
+    if not new:
+        return None
+    feature = new[-1]
+    if abs(_volume() - volume_before) < 1e-3:
+        raise Exception(f"Boundary feature '{feature.Name}' was created but did not "
+                        "change the body — check the profiles (closed, on different "
+                        "planes) and, for a cut, that they overlap the body.")
+    return feature
+
+
 class FeatureTools:
     """Boss/Base feature operations (revolve, sweep, loft, boundary boss)"""
 
@@ -338,23 +413,8 @@ class FeatureTools:
         # Exit any active sketch (tracker-aware)
         exit_active_sketch(doc, self.tracker)
 
-        # Select profiles (mark=1 for direction 1 profiles)
-        sel.clear_selection(doc)
-        for i, name in enumerate(profiles):
-            if not sel.select_sketch(doc, name, mark=1, append=(i > 0)):
-                available = self._list_available_sketches(doc)
-                raise Exception(
-                    f"Could not select profile sketch: {name}. "
-                    f"Available sketches in feature tree: [{available}]"
-                )
-
-        # Select guide curves if provided (mark=2 for direction 2)
-        for name in guide_curves:
-            if not sel.select_sketch(doc, name, mark=2, append=True):
-                logger.warning(f"Could not select guide curve: {name}")
-
-        # InsertBoundaryBoss creates the feature from selected profiles
-        feature = doc.FeatureManager.InsertBoundaryBoss()
+        feature = insert_boundary_feature(doc, profiles, guide_curves, 1,
+                                          self._list_available_sketches)
 
         if not feature:
             raise Exception(

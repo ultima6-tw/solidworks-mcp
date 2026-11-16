@@ -2355,6 +2355,92 @@ def test_mcp_thread(sw, template):
         return False
 
 
+@register_test("mcp_boundary", "MCP Boundary Boss / Cut", "MCP Tools",
+               "Boundary boss frustum (with and without a guide curve) and boundary cut; check volumes", order=24)
+def test_mcp_boundary(sw, template):
+    """boundary_boss / boundary_cut called InsertBoundaryBoss/InsertBoundaryCut,
+    which do not exist; they now use InsertNetBlend2. The surfaces are
+    approximations, so volumes are checked to 0.01%."""
+    frustum = lambda R, r, h: math.pi * h / 3 * (R * R + R * r + r * r)
+
+    def profiles(server, r1):
+        R = server._route_tool
+        s1 = _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))["id"]
+        R("solidworks_sketch_circle", {"radius": r1, "centerX": 0, "centerY": 0})
+        R("solidworks_exit_sketch", {})
+        pl = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Front", "offset": 80}))["id"]
+        s2 = _mcp_json(R("solidworks_create_sketch", {"plane": pl}))["id"]
+        R("solidworks_sketch_circle", {"radius": 10, "centerX": 0, "centerY": 0})
+        R("solidworks_exit_sketch", {})
+        return [s1, s2]
+
+    def check(server, label, want):
+        vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+        if abs(vol - want) > want * 1e-4:
+            log(f"{label}: volume {vol:.1f} != expected {want:.1f}", "ERROR")
+            return False
+        log(f"{label}: volume {vol:.1f} (exact {want:.1f})", "SUCCESS")
+        return True
+
+    try:
+        # 1. boss from two circles (r30 at z=0, r10 at z=80)
+        server = create_mcp_server()
+        server._route_tool("solidworks_new_part", {})
+        r = server._route_tool("solidworks_boundary_boss", {"profiles": profiles(server, 30)})
+        if not _mcp_ok(r) or not check(server, "boundary boss", frustum(30, 10, 80)):
+            log(f"boundary_boss: {r}", "ERROR")
+            return False
+        server._route_tool("solidworks_close_document", {})
+
+        # 2. same boss with a straight guide curve on the Top plane joining
+        #    the two circles at +X; the shape stays a frustum
+        server = create_mcp_server()
+        server._route_tool("solidworks_new_part", {})
+        sk = profiles(server, 30)
+        g = _mcp_json(server._route_tool("solidworks_create_sketch", {"plane": "Top"}))
+        # map model points (30,0,0) and (10,0,80) into this sketch's frame
+        o, ax, ay = g["sketchFrame"]["originModel_mm"], g["sketchFrame"]["xAxisModel"], g["sketchFrame"]["yAxisModel"]
+        to_sk = lambda p: (sum((p[k] - o[k]) * ax[k] for k in range(3)), sum((p[k] - o[k]) * ay[k] for k in range(3)))
+        (x1, y1), (x2, y2) = to_sk((30, 0, 0)), to_sk((10, 0, 80))
+        server._route_tool("solidworks_sketch_line", {"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+        server._route_tool("solidworks_exit_sketch", {})
+        r = server._route_tool("solidworks_boundary_boss", {"profiles": sk, "guideCurves": [g["id"]]})
+        if not _mcp_ok(r) or not check(server, "boundary boss + guide", frustum(30, 10, 80)):
+            log(f"boundary_boss with guide: {r}", "ERROR")
+            return False
+        # same volume either way, so also prove the guide was used:
+        # IBoundaryBossFeatureData.GetCurvesCount(1 = swBoundaryBossDirection_Second)
+        from solidworks.com_utils import com_prop
+        name = _mcp_json(r)["id"].split(":", 1)[1]
+        bd = com_prop(sw.ActiveDoc.FeatureByName(name), "GetDefinition")
+        n1, n2 = bd.GetCurvesCount(0), bd.GetCurvesCount(1)
+        if (n1, n2) != (2, 1):
+            log(f"boundary boss curves: direction 1 = {n1}, direction 2 = {n2} (want 2, 1)", "ERROR")
+            return False
+        log("guide curve is used (direction 1: 2 profiles, direction 2: 1 guide)", "SUCCESS")
+        server._route_tool("solidworks_close_document", {})
+
+        # 3. cut a r20->r10 frustum out of a r40 x 80 cylinder
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_circle", {"radius": 40, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 80}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        r = server._route_tool("solidworks_boundary_cut", {"profiles": profiles(server, 20)})
+        if not _mcp_ok(r) or not check(server, "boundary cut", math.pi * 40 ** 2 * 80 - frustum(20, 10, 80)):
+            log(f"boundary_cut: {r}", "ERROR")
+            return False
+        return True
+    except Exception as e:
+        log(f"mcp_boundary FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

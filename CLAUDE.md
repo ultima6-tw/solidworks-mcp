@@ -237,6 +237,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 - `FeatureRevolve2` (20 params) - see `features.py` / `cut_features.py`
 - `InsertProtrusionSwept4` / `InsertCutSwept5` - see `features.py` / `cut_features.py`
 - `InsertProtrusionBlend2` (18 params for SW2025) / `InsertCutBlend2` (18 params for SW2025) - see `features.py` / `cut_features.py`
+- Boundary boss/cut: `IFeatureManager::InsertNetBlend2` (Type 1 = boss, 3 = cut; `InsertBoundaryBoss`/`InsertBoundaryCut` do not exist). Profiles selected with marks 8193, 16385, … and guides with 8194, 16386, … (SW2022 API help); preceded by `SetNetBlendCurveData`/`SetNetBlendDirectionData`. Returns None even on success — the feature is found by diffing the tree - see `features.insert_boundary_feature`
 - `FeatureFillet3`, `InsertFeatureChamfer`, `InsertFeatureShell`, `IFeatureManager::InsertMultiFaceDraft` (neutral plane mark 1, faces mark 2; `InsertFeatureDraft` does not exist) - see `applied_features.py`
 - `FeatureLinearPattern4` (20 params for SW2025 — 11/12-param forms raise 'Parameter not optional'), `FeatureCircularPattern4`, `InsertMirrorFeature2` - see `patterns.py`
 - `InsertRefPlane`, `IModelDoc2::InsertAxis2` (returns bool; `InsertRefAxis` does not exist), `InsertReferencePoint` (returns an ARRAY; swRefPointType_e AlongCurve=2 / CenterEdge=3 / FaceCenter=4 / SketchPoint=7; percent is 0-100; no coordinate type — COORDINATES goes through a 3D-sketch point), `InsertCoordinateSystem` - see `reference_geometry.py`

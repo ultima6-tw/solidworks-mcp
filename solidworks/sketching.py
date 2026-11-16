@@ -893,6 +893,11 @@ class SketchingTools:
             from .selection_helpers import resolve_plane_feature
 
             plane_name = args.get("plane", "Front")
+            if str(plane_name).startswith("ref:"):
+                # accept the ID that ref_plane returns (e.g. "ref:Plane1"),
+                # as the tool description promises
+                from .com_utils import resolve_tracked_name
+                plane_name = resolve_tracked_name(self.tracker, plane_name)                     if self.tracker else plane_name[len("ref:"):]
             plane_feature = resolve_plane_feature(doc, plane_name)
             if not plane_feature:
                 raise Exception(

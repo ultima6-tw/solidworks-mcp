@@ -9,6 +9,7 @@ import math
 from mcp.types import Tool
 from . import selection_helpers as sel
 from .com_utils import exit_active_sketch, resolve_tracked_name
+from .features import insert_boundary_feature
 
 logger = logging.getLogger(__name__)
 
@@ -329,22 +330,8 @@ class CutFeatureTools:
         # Exit any active sketch (tracker-aware)
         exit_active_sketch(doc, self.tracker)
 
-        # Select profiles (mark=1)
-        sel.clear_selection(doc)
-        for i, name in enumerate(profiles):
-            if not sel.select_sketch(doc, name, mark=1, append=(i > 0)):
-                available = self._list_available_sketches(doc)
-                raise Exception(
-                    f"Could not select profile sketch: {name}. "
-                    f"Available sketches in feature tree: [{available}]"
-                )
-
-        # Select guide curves if provided (mark=2)
-        for name in guide_curves:
-            if not sel.select_sketch(doc, name, mark=2, append=True):
-                logger.warning(f"Could not select guide curve: {name}")
-
-        feature = doc.FeatureManager.InsertBoundaryCut()
+        feature = insert_boundary_feature(doc, profiles, guide_curves, 3,
+                                          self._list_available_sketches)
 
         if not feature:
             raise Exception(
