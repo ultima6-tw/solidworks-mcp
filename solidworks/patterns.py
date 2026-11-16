@@ -107,7 +107,7 @@ class PatternTools:
                         },
                         "axis": {
                             "type": "string",
-                            "description": "Name of the axis or edge for rotation. Can be a reference axis name, or a standard axis like 'Top Plane' edge."
+                            "description": "Name or ID of a reference axis to rotate about (e.g. from ref_axis). To use a hole/cylinder directly, pass axisEdge with a point on its circular edge instead."
                         },
                         "axisEdge": {
                             "type": "object",
@@ -125,7 +125,7 @@ class PatternTools:
                         },
                         "angle": {
                             "type": "number",
-                            "description": "Total angle for pattern in degrees (default: 360)",
+                            "description": "Angle in degrees (default: 360). With equalSpacing=true it is the TOTAL angle the instances are spread over; with equalSpacing=false it is the angle BETWEEN neighbouring instances.",
                             "default": 360
                         },
                         "equalSpacing": {
@@ -334,6 +334,8 @@ class PatternTools:
 
         # Select axis (mark=1)
         axis_name = args.get("axis")
+        if axis_name:
+            axis_name = self._resolve_name(axis_name)  # accept ref:Axis1 IDs
         axis_edge = args.get("axisEdge")
         if axis_name:
             if not sel.select_axis(doc, axis_name, mark=1, append=False):
@@ -351,17 +353,21 @@ class PatternTools:
             if not sel.select_feature(doc, name, mark=4, append=True):
                 raise Exception(f"Could not select feature: {name}")
 
-        # FeatureCircularPattern4 parameters:
-        # Num, Spacing, FlipDir, EqualSpacing,
-        # SeedOnly, GeomPattern, VarySketch, ...
+        # FeatureCircularPattern4(Number, Spacing, FlipDirection, DName,
+        #   GeometryPattern, EqualSpacing, VaryInstance) — names from the
+        # SOLIDWORKS type library. The previous call passed equal_spacing as
+        # DName and False as EqualSpacing, so 360 deg became the gap BETWEEN
+        # instances (all copies on top of each other) and the call always
+        # returned None. Probed on SW2022: axis / circular edge / cylindrical
+        # face all work with this order.
         feature = doc.FeatureManager.FeatureCircularPattern4(
-            count,          # Num: number of instances
-            angle_rad,      # Spacing: total angle in radians
-            False,          # FlipDir
+            count,          # Number of instances (including the seed)
+            angle_rad,      # Spacing: total angle if EqualSpacing, else angle between instances
+            False,          # FlipDirection
+            "NULL",         # DName: direction dimension name (none)
+            False,          # GeometryPattern
             equal_spacing,  # EqualSpacing
-            True,           # SeedOnly
-            False,          # GeomPattern
-            False,          # VarySketch
+            False,          # VaryInstance
         )
 
         if not feature:

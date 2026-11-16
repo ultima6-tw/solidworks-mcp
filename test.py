@@ -2222,6 +2222,60 @@ def test_mcp_ref_axis(sw, template):
         return False
 
 
+@register_test("mcp_circular_pattern", "MCP Circular Pattern", "MCP Tools",
+               "Pattern a hole around a disk: by ref-axis ID, by circular edge, and with explicit spacing", order=21)
+def test_mcp_circular_pattern(sw, template):
+    """circular_pattern passed FeatureCircularPattern4's arguments in the
+    wrong order (EqualSpacing ended up False, so 360 deg became the gap
+    between instances) and always failed. There was no test for it."""
+    try:
+        disk = math.pi * 40 ** 2 * 10
+        hole = math.pi * 4 ** 2 * 10
+        cases = [
+            ("axis = ref-axis ID, 6 over 360", None, {"count": 6, "angle": 360}, 6),
+            ("axisEdge = outer circular edge, 6 over 360", {"x": 40, "y": 0, "z": 10}, {"count": 6, "angle": 360}, 6),
+            ("equalSpacing=false, 4 at 90", None, {"count": 4, "angle": 90, "equalSpacing": False}, 4),
+        ]
+        for label, edge, params, holes in cases:
+            server = create_mcp_server()
+            results = [
+                server._route_tool("solidworks_new_part", {}),
+                server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+                server._route_tool("solidworks_sketch_circle", {"radius": 40, "centerX": 0, "centerY": 0}),
+                server._route_tool("solidworks_create_extrusion", {"depth": 10}),
+                server._route_tool("solidworks_create_sketch", {"faceX": 0, "faceY": 0, "faceZ": 10}),
+                server._route_tool("solidworks_sketch_circle", {"radius": 4, "centerX": 25, "centerY": 0}),
+            ]
+            cut = server._route_tool("solidworks_create_cut_extrusion", {"depth": 10})
+            results.append(cut)
+            axis = server._route_tool("solidworks_ref_axis", {
+                "type": "CYLINDRICAL_FACE", "face": {"x": 40, "y": 0, "z": 5}})
+            results.append(axis)
+            if not mcp_check_results(results):
+                return False
+            args = dict(params, features=[_mcp_json(cut)["id"]])
+            if edge:
+                args["axisEdge"] = edge
+            else:
+                args["axis"] = _mcp_json(axis)["id"]
+            r = server._route_tool("solidworks_circular_pattern", args)
+            if not _mcp_ok(r):
+                log(f"circular_pattern ({label}) failed: {r}", "ERROR")
+                return False
+            vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+            want = disk - holes * hole
+            if abs(vol - want) > 1:
+                log(f"circular_pattern ({label}): volume {vol:.1f} != expected {want:.1f}", "ERROR")
+                return False
+            log(f"{label}: volume {vol:.1f} OK", "SUCCESS")
+            server._route_tool("solidworks_close_document", {})
+        return True
+    except Exception as e:
+        log(f"mcp_circular_pattern FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
