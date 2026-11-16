@@ -77,6 +77,41 @@ def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
         time.sleep(0.1)
 
 
+
+class _direct_retry:
+    """SketchManager proxy: if a Create* call returns None, retry it ONCE with
+    AddToDB=True, then restore the previous AddToDB value.
+
+    Probed on SW2022: with AddToDB off (the default), small entities fail
+    depending on the current view scale — a radius-1mm circle returns None
+    while 2mm works, anywhere in the sketch. With AddToDB on the same call
+    succeeds. The normal path is kept first because it adds the automatic
+    relations (e.g. coincident endpoints of separately drawn lines) that
+    callers rely on; the retry only rescues calls that would have failed.
+    """
+
+    def __init__(self, doc):
+        self._sm = doc.SketchManager
+
+    def __getattr__(self, name):
+        method = getattr(self._sm, name)
+
+        def call(*args):
+            obj = method(*args)
+            if obj is not None:
+                return obj
+            prev = self._sm.AddToDB
+            try:
+                self._sm.AddToDB = True
+                obj = method(*args)
+                if obj is not None:
+                    logger.info(f"{name} succeeded only with AddToDB=True "
+                                "(entity too small for the current view scale)")
+                return obj
+            finally:
+                self._sm.AddToDB = prev
+        return call
+
 class SketchingTools:
     """Sketch creation and drawing operations with spatial awareness"""
     
@@ -488,7 +523,7 @@ class SketchingTools:
                         },
                         "inscribed": {
                             "type": "boolean",
-                            "description": "If true, radius is the inscribed circle radius. Default: false (circumscribed)"
+                            "description": "If true, radius is measured from the center to the MIDPOINT of each side (inscribed circle / apothem). Default: false = center to a vertex (circumscribed circle)."
                         },
                         "relativeX": {
                             "type": "number",
@@ -1137,7 +1172,7 @@ class SketchingTools:
         y2 = center_y_m + height_m / 2
         
         # Draw rectangle
-        obj = doc.SketchManager.CreateCornerRectangle(x1, y1, 0.0, x2, y2, 0.0)
+        obj = _direct_retry(doc).CreateCornerRectangle(x1, y1, 0.0, x2, y2, 0.0)
         self._check_drawn(obj, f"rectangle {width}mm x {height}mm")
 
         # Track this shape
@@ -1188,7 +1223,7 @@ class SketchingTools:
         r_m = radius / 1000.0
         
         # Draw circle
-        obj = doc.SketchManager.CreateCircleByRadius(cx_m, cy_m, 0.0, r_m)
+        obj = _direct_retry(doc).CreateCircleByRadius(cx_m, cy_m, 0.0, r_m)
         self._check_drawn(obj, f"circle radius {radius}mm")
         
         # Track this shape
@@ -1231,7 +1266,7 @@ class SketchingTools:
         x1, y1 = args["x1"], args["y1"]
         x2, y2 = args["x2"], args["y2"]
 
-        obj = doc.SketchManager.CreateLine(
+        obj = _direct_retry(doc).CreateLine(
             x1 / 1000.0, y1 / 1000.0, 0.0,
             x2 / 1000.0, y2 / 1000.0, 0.0
         )
@@ -1465,7 +1500,7 @@ class SketchingTools:
         x1, y1 = args["x1"], args["y1"]
         x2, y2 = args["x2"], args["y2"]
 
-        obj = doc.SketchManager.CreateCenterLine(
+        obj = _direct_retry(doc).CreateCenterLine(
             x1 / 1000.0, y1 / 1000.0, 0.0,
             x2 / 1000.0, y2 / 1000.0, 0.0
         )
@@ -1495,7 +1530,7 @@ class SketchingTools:
 
         x, y = args["x"], args["y"]
 
-        obj = doc.SketchManager.CreatePoint(x / 1000.0, y / 1000.0, 0.0)
+        obj = _direct_retry(doc).CreatePoint(x / 1000.0, y / 1000.0, 0.0)
         self._check_drawn(obj, f"point at ({x}, {y})")
 
         # Points are zero-dimensional - don't update last_shape
@@ -1527,7 +1562,7 @@ class SketchingTools:
             x2, y2 = args["x2"], args["y2"]
             x3, y3 = args["x3"], args["y3"]
 
-            obj = doc.SketchManager.Create3PointArc(
+            obj = _direct_retry(doc).Create3PointArc(
                 x1 / 1000.0, y1 / 1000.0, 0.0,
                 x2 / 1000.0, y2 / 1000.0, 0.0,
                 x3 / 1000.0, y3 / 1000.0, 0.0
@@ -1569,7 +1604,7 @@ class SketchingTools:
             x1, y1 = args["x1"], args["y1"]
             x2, y2 = args["x2"], args["y2"]
 
-            obj = doc.SketchManager.CreateArc(
+            obj = _direct_retry(doc).CreateArc(
                 cx / 1000.0, cy / 1000.0, 0.0,
                 x1 / 1000.0, y1 / 1000.0, 0.0,
                 x2 / 1000.0, y2 / 1000.0, 0.0,
@@ -1627,13 +1662,21 @@ class SketchingTools:
 
         cx_m = center_x / 1000.0
         cy_m = center_y / 1000.0
-        r_m = radius / 1000.0
 
-        # Edge point: vertex on the circumscribed circle, directly to the right
+        # CreatePolygon(XC, YC, Zc, Xp, Yp, Zp, Sides, Inscribed): probed on
+        # SW2022, the point (Xp, Yp) ALWAYS becomes a vertex; Inscribed only
+        # chooses whether the construction circle is drawn inside the polygon
+        # (radius = apothem) or through the vertices. So for an inscribed
+        # radius (center to side midpoint) the vertex must be placed at
+        # radius / cos(pi / n).
+        vertex_r = radius / math.cos(math.pi / num_sides) if inscribed else radius
+        r_m = vertex_r / 1000.0
+
+        # Edge point: a vertex directly to the right of the center
         edge_x = cx_m + r_m
         edge_y = cy_m
 
-        obj = doc.SketchManager.CreatePolygon(
+        obj = _direct_retry(doc).CreatePolygon(
             cx_m, cy_m, 0.0,
             edge_x, edge_y, 0.0,
             num_sides,
@@ -1647,10 +1690,11 @@ class SketchingTools:
             "centerY": center_y,
             "radius": radius,
             "numSides": num_sides,
-            "left": center_x - radius,
-            "right": center_x + radius,
-            "bottom": center_y - radius,
-            "top": center_y + radius,
+            "inscribed": inscribed,
+            "left": center_x - vertex_r,
+            "right": center_x + vertex_r,
+            "bottom": center_y - vertex_r,
+            "top": center_y + vertex_r,
         }
         coordinates = {"centerX": center_x, "centerY": center_y, "radius": radius, "numSides": num_sides}
 
@@ -1698,7 +1742,7 @@ class SketchingTools:
         minor_x = cx_m + minor_r_m * math.cos(angle_rad + math.pi / 2)
         minor_y = cy_m + minor_r_m * math.sin(angle_rad + math.pi / 2)
 
-        obj = doc.SketchManager.CreateEllipse(
+        obj = _direct_retry(doc).CreateEllipse(
             cx_m, cy_m, 0.0,
             major_x, major_y, 0.0,
             minor_x, minor_y, 0.0
@@ -1757,7 +1801,7 @@ class SketchingTools:
         point_array = win32com.client.VARIANT(
             pythoncom.VT_ARRAY | pythoncom.VT_R8, point_data
         )
-        obj = doc.SketchManager.CreateSpline2(point_array, True)
+        obj = _direct_retry(doc).CreateSpline2(point_array, True)
         self._check_drawn(obj, f"spline through {len(points)} points")
 
         xs = [p["x"] for p in points]
@@ -1803,7 +1847,7 @@ class SketchingTools:
         x2, y2 = args["x2"], args["y2"]
         width = args["width"]
 
-        obj = doc.SketchManager.CreateSketchSlot(
+        obj = _direct_retry(doc).CreateSketchSlot(
             0,                                   # slotType: straight (center line)
             0,                                   # lengthType: center-to-center
             width / 1000.0,                      # slot width in meters

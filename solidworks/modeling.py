@@ -351,11 +351,14 @@ class ModelingTools:
         end_type = {"BLIND": 0, "THROUGH_ALL": 1}.get(end_condition, 0)
         merge = args.get("merge", True)
 
-        # Create extrusion with all 23 required parameters
+        # Create extrusion with all 23 required parameters.
+        # Parameter 2 (Flip) only flips the side-to-cut of CUT features; the
+        # extrusion direction is parameter 3 (Dir). Probed on SW2022: Flip=True
+        # leaves the body in front of the sketch plane, Dir=True puts it behind.
         feature = doc.FeatureManager.FeatureExtrusion2(
             True,      # Sd (same direction)
-            reverse,   # Flip direction
-            False,     # Dir
+            False,     # Flip (side to cut — cuts only)
+            reverse,   # Dir (extrusion direction)
             end_type,  # T1 (end condition type - 0 = Blind, 1 = Through All)
             0,         # T2
             depth,     # D1 (depth in meters)

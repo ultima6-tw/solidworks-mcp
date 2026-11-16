@@ -8,10 +8,20 @@ import logging
 import math
 from mcp.types import Tool
 from . import selection_helpers as sel
-from .com_utils import exit_active_sketch
+from .com_utils import com_prop, exit_active_sketch
 
 logger = logging.getLogger(__name__)
 
+
+
+def _body_volume_mm3(doc):
+    """Volume of the active part in mm^3, or None if it cannot be measured.
+    Used to verify that a feature actually changed the geometry."""
+    try:
+        mp = com_prop(doc.Extension, "CreateMassProperty")
+        return float(mp.Volume) * 1e9 if mp is not None else None
+    except Exception:
+        return None
 
 def _select_all_or_raise(doc, points, kind, mark, append_first=False, what=""):
     """Select EVERY point in `points` as `kind` ('edge' or 'face') or raise.
@@ -415,12 +425,23 @@ class AppliedFeatureTools:
         angle_rad = math.radians(angle_deg)
         distance2_m = args.get("distance2", args["distance"]) / 1000.0
 
+        # swChamferType_e: AngleDistance=1, DistanceDistance=2, Vertex=3,
+        # EqualDistance=16. Probed on SW2022 SP4: InsertFeatureChamfer with
+        # type 16 (or the old 0) creates the feature but removes NO material —
+        # silently. Types 1 and 2 work. An equal-distance chamfer is exactly
+        # distance + 45 degrees, so EQUAL_DISTANCE is built as type 1 at 45°.
+        if chamfer_type == "EQUAL_DISTANCE":
+            angle_rad = math.radians(45)
+            distance2_m = distance_m
         type_map = {
-            "EQUAL_DISTANCE": 0,
+            "EQUAL_DISTANCE": 1,
             "DISTANCE_ANGLE": 1,
             "TWO_DISTANCES": 2,
         }
-        chamfer_type_int = type_map.get(chamfer_type, 0)
+        chamfer_type_int = type_map.get(chamfer_type, 1)
+        # Measured BEFORE selecting edges so the mass-property query cannot
+        # interfere with the selection set.
+        volume_before = _body_volume_mm3(doc)
 
         # Semantic selection by feature — same view-independent object
         # selection as fillet (see _edge_objects_of_feature).
@@ -451,18 +472,27 @@ class AppliedFeatureTools:
             count += _select_all_or_raise(doc, edges, "edge", mark=0,
                                           append_first=count > 0, what="chamfer")
 
-        # InsertFeatureChamfer params (8 params required for SW2025+):
-        # Options, ChamferType, Width, Angle, OtherDist, 0, 0, 0
+        # InsertFeatureChamfer(Options, ChamferType, Width, Angle, OtherDist,
+        #                     VertexChamDist1, VertexChamDist2, VertexChamDist3)
         feature = doc.FeatureManager.InsertFeatureChamfer(
-            4,                  # Options: 4 = select edges
-            chamfer_type_int,   # Type: 0=equal, 1=dist-angle, 2=two-dist
+            4,                  # Options: swFeatureChamferTangentPropagation
+            chamfer_type_int,   # swChamferType_e (1=dist-angle, 2=dist-dist)
             distance_m,         # Width (distance 1)
             angle_rad,          # Angle in radians
             distance2_m,        # Other distance
-            0,                  # SW2025 extra param 1
-            0,                  # SW2025 extra param 2
-            0,                  # SW2025 extra param 3
+            0,                  # VertexChamDist1 (vertex chamfers only)
+            0,                  # VertexChamDist2
+            0,                  # VertexChamDist3
         )
+        # A chamfer feature can exist without removing material (see the
+        # type note above) — report that instead of a false success.
+        if feature and volume_before is not None:
+            volume_after = _body_volume_mm3(doc)
+            if volume_after is not None and abs(volume_after - volume_before) < 1e-3:
+                raise Exception(
+                    f"Chamfer '{feature.Name}' was created but removed no "
+                    "material — check that the selected edges are real "
+                    "convex edges of the body.")
 
         if not feature:
             raise Exception("Failed to create chamfer. Verify edge coordinates are correct.")

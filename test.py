@@ -297,8 +297,9 @@ def extrude(doc, sketch_name, depth_mm, cut=False, reverse=False):
     depth_m = depth_mm / 1000.0
 
     if cut:
+        # Flip (param 2) = side to cut, Dir (param 3) = direction
         feature = doc.FeatureManager.FeatureCut4(
-            True, reverse, False, 0, 0, depth_m, 0.0,
+            True, False, reverse, 0, 0, depth_m, 0.0,
             False, False, False, False, 0.0, 0.0,
             False, False, False, False, False, False, True,
             False, True, False, 0, 0.0, False, False
@@ -306,8 +307,9 @@ def extrude(doc, sketch_name, depth_mm, cut=False, reverse=False):
         if not feature:
             raise RuntimeError("FeatureCut4 returned None for cut-extrusion")
     else:
+        # Flip (param 2) only applies to cuts; direction is Dir (param 3)
         feature = doc.FeatureManager.FeatureExtrusion2(
-            True, reverse, False, 0, 0, depth_m, 0.0,
+            True, False, reverse, 0, 0, depth_m, 0.0,
             False, False, False, False, 0.0, 0.0,
             False, False, False, False, True, True, True, 0, 0, False
         )
@@ -975,15 +977,25 @@ def test_chamfer(sw, template):
             log("Could not select edge for chamfer", "ERROR")
             return False
 
-        # SolidWorks 2025 requires 8 parameters (3 extra trailing zeros)
+        # 8 params: Options, ChamferType, Width, Angle, OtherDist, 3x vertex dist.
+        # ChamferType 1 = distance-angle (45° == equal distance). Type 0/16
+        # create a feature that removes no material on SW2022, so the volume
+        # is checked — a non-None feature alone proved nothing.
         feature = model.FeatureManager.InsertFeatureChamfer(
-            4, 0, 0.005, 0.785398, 0.005, 0, 0, 0,
+            4, 1, 0.005, 0.785398, 0.005, 0, 0, 0,
         )
         if not feature:
             log("InsertFeatureChamfer returned None", "ERROR")
             return False
 
-        log("Chamfer created (5mm)", "SUCCESS")
+        model.ForceRebuild3(True)
+        vol_mm3 = model.Extension.CreateMassProperty.Volume * 1e9
+        expected = 100 ** 3 - 0.5 * 5 * 5 * 100
+        if abs(vol_mm3 - expected) > 1:
+            log(f"Chamfer volume {vol_mm3:.1f} != expected {expected:.1f}", "ERROR")
+            return False
+
+        log("Chamfer created (5mm), volume verified", "SUCCESS")
         model.ViewZoomtofit2()
         return True
     except Exception as e:
@@ -1394,11 +1406,13 @@ def test_mcp_chamfer(sw, template):
         if not _mcp_ok(r):
             log(f"Chamfer failed: {r}", "ERROR")
             return False
-        if "Chamfer" not in r:
-            log(f"Chamfer result missing feature name: {r}", "ERROR")
+        vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+        expected = 100 ** 3 - 0.5 * 5 * 5 * 100
+        if abs(vol - expected) > 1:
+            log(f"Chamfer volume {vol} != expected {expected}", "ERROR")
             return False
 
-        log("MCP chamfer succeeded", "SUCCESS")
+        log("MCP chamfer succeeded, volume verified", "SUCCESS")
         return True
     except Exception as e:
         log(f"mcp_chamfer FAILED: {e}", "ERROR")
@@ -2024,6 +2038,97 @@ def test_mcp_linear_pattern(sw, template):
 # ===========================================================================
 
 
+@register_test("mcp_extrusion_reverse", "MCP Extrusion Reverse", "MCP Tools",
+               "reverse=true must put the body BEHIND the sketch plane (centroid z<0)", order=16)
+def test_mcp_extrusion_reverse(sw, template):
+    """reverse used to be passed to FeatureExtrusion2's Flip (a cut-only
+    option), so the body silently stayed in front of the plane."""
+    try:
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_rectangle", {
+                "width": 40, "height": 40, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 50, "reverse": True}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        mp = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))
+        z = mp["centerOfMass_mm"]["z"]
+        if abs(mp["volume_mm3"] - 80000) > 1 or abs(z + 25) > 0.01:
+            log(f"Reverse extrusion wrong: volume {mp['volume_mm3']}, centroid z {z} (expected 80000, -25)", "ERROR")
+            return False
+        log("Reverse extrusion went behind the Front plane", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_extrusion_reverse FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_polygon_inscribed", "MCP Polygon Inscribed vs Circumscribed", "MCP Tools",
+               "inscribed=true measures the radius to the side midpoint; verify both by volume", order=17)
+def test_mcp_polygon_inscribed(sw, template):
+    """inscribed used to have no effect: CreatePolygon always treats the
+    given point as a vertex."""
+    try:
+        n, r, h = 5, 25.0, 15.0
+        expected = {
+            False: 0.5 * n * r * r * math.sin(2 * math.pi / n) * h,   # r = vertex
+            True: n * r * r * math.tan(math.pi / n) * h,              # r = apothem
+        }
+        for inscribed, want in expected.items():
+            server = create_mcp_server()
+            results = [
+                server._route_tool("solidworks_new_part", {}),
+                server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+                server._route_tool("solidworks_sketch_polygon", {
+                    "radius": r, "numSides": n, "centerX": 0, "centerY": 0,
+                    "inscribed": inscribed}),
+                server._route_tool("solidworks_create_extrusion", {"depth": h}),
+            ]
+            if not mcp_check_results(results):
+                return False
+            vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+            if abs(vol - want) > 1:
+                log(f"inscribed={inscribed}: volume {vol:.1f} != expected {want:.1f}", "ERROR")
+                return False
+            server._route_tool("solidworks_close_document", {})
+        log("Polygon inscribed/circumscribed volumes correct", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_polygon_inscribed FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_small_entities", "MCP Small Sketch Entities", "MCP Tools",
+               "A radius-1mm circle (fails without AddToDB at default zoom) extrudes correctly", order=18)
+def test_mcp_small_entities(sw, template):
+    try:
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_circle", {"radius": 1, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 80}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+        want = math.pi * 1 * 1 * 80
+        if abs(vol - want) > 0.5:
+            log(f"Small rod volume {vol:.2f} != expected {want:.2f}", "ERROR")
+            return False
+        log("Radius-1mm circle drawn and extruded", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_small_entities FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
@@ -2533,10 +2638,23 @@ def test_integration_suite(sw, template):
     subsection("Cut-extrusion reversed direction")
     try:
         create_sketch_on_face(doc, 30, 30, 0)
-        doc.SketchManager.CreateCornerRectangle(0.01, 0.01, 0.0, 0.04, 0.04, 0.0)
+        # On the z=0 (back) face the sketch X axis is model -X, so model
+        # x=10..40 is sketch x=-40..-10. (The original used +10..+40, which
+        # lies entirely outside the body: both cut directions fail, and the
+        # test only "passed" because reverse went into Flip = cut OUTSIDE
+        # the profile, removing most of the block.)
+        doc.SketchManager.CreateCornerRectangle(-0.04, 0.01, 0.0, -0.01, 0.04, 0.0)
         exit_sketch(doc)
-        feat = extrude(doc, N(doc, "Sketch3"), 30.0, cut=True, reverse=True)
-        _result("Cut-extrusion reversed 30mm", feat is not None)
+        vol_before = doc.Extension.CreateMassProperty.Volume * 1e9
+        # Exactly one direction points into the body; the other must be refused.
+        try:
+            feat = extrude(doc, N(doc, "Sketch3"), 30.0, cut=True, reverse=True)
+        except RuntimeError:
+            feat = None
+            feat = extrude(doc, N(doc, "Sketch3"), 30.0, cut=True, reverse=False)
+        removed = vol_before - doc.Extension.CreateMassProperty.Volume * 1e9
+        _result("Cut 30mm into the body from the z=0 face (removes 27000 mm^3)",
+                feat is not None and abs(removed - 27000) < 1, f"removed {removed:.1f}")
         doc.ViewZoomtofit2()
     except Exception as e:
         _result("Cut-extrusion reversed 30mm", False, str(e))
