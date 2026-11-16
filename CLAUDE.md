@@ -239,7 +239,8 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 - `InsertProtrusionBlend2` (18 params for SW2025) / `InsertCutBlend2` (18 params for SW2025) - see `features.py` / `cut_features.py`
 - `FeatureFillet3`, `InsertFeatureChamfer`, `InsertFeatureShell`, `IFeatureManager::InsertMultiFaceDraft` (neutral plane mark 1, faces mark 2; `InsertFeatureDraft` does not exist) - see `applied_features.py`
 - `FeatureLinearPattern4` (20 params for SW2025 — 11/12-param forms raise 'Parameter not optional'), `FeatureCircularPattern4`, `InsertMirrorFeature2` - see `patterns.py`
-- `InsertRefPlane`, `IModelDoc2::InsertAxis2` (returns bool; `InsertRefAxis` does not exist), `InsertReferencePoint`, `InsertCoordinateSystem` - see `reference_geometry.py`
+- `InsertRefPlane`, `IModelDoc2::InsertAxis2` (returns bool; `InsertRefAxis` does not exist), `InsertReferencePoint` (returns an ARRAY; swRefPointType_e AlongCurve=2 / CenterEdge=3 / FaceCenter=4 / SketchPoint=7; percent is 0-100; no coordinate type — COORDINATES goes through a 3D-sketch point), `InsertCoordinateSystem` - see `reference_geometry.py`
+- `IFeatureManager::InsertCosmeticThread2(Type, Depth, Length, Note)` — 2nd arg becomes the minor Diameter, 3rd the BlindDepth (read back from the definition) - see `hole_features.py`
 - `AddComponent5`, `AddMate5` (15 params), `GetComponents`, `IComponent2::Transform2` (getter only), MateGroup sub-feature traversal - see `assembly.py`
 - `IModelDocExtension::SaveAs`, `OpenDoc6`, `ActivateDoc3`, `QuitDoc`, `GetDocuments` - see `document_manager.py` / `connection.py`
 - `IFace2::GetFeature`, `IFeature::GetParents` / `GetChildren`, `ISketch::GetConstrainedStatus` (3=fully defined, 2=under defined) - see `geometry_query.py` / `state_query.py`

@@ -8,6 +8,7 @@ import logging
 import math
 from mcp.types import Tool
 from . import selection_helpers as sel
+from .com_utils import com_prop
 
 logger = logging.getLogger(__name__)
 
@@ -159,13 +160,17 @@ class ReferenceGeometryTools:
                         },
                         "edge": {
                             "type": "object",
-                            "description": "Point on an edge/arc ({x, y, z} in mm) for ARC_CENTER or ON_EDGE type",
+                            "description": "Point on an edge/arc ({x, y, z} in mm) for ARC_CENTER (circular edge) or ON_EDGE type",
                             "properties": {
                                 "x": {"type": "number"},
                                 "y": {"type": "number"},
                                 "z": {"type": "number"}
                             },
                             "required": ["x", "y", "z"]
+                        },
+                        "percent": {
+                            "type": "number",
+                            "description": "ON_EDGE only: position along the edge in percent, 0-100 (default 50)"
                         },
                         "face": {
                             "type": "object",
@@ -442,122 +447,96 @@ class ReferenceGeometryTools:
         return self._json_result(f"✓ Reference axis '{feature_name}' created ({axis_type})", id=ref_id, type="ref_axis")
 
     def ref_point(self, args: dict) -> str:
+        """IFeatureManager.InsertReferencePoint(NRefPointType,
+        NRefPointAlongCurveType, DDistance_or_Percent, NumberOfRefPoints)
+        returns an ARRAY of features. Type codes are swRefPointType_e:
+        AlongCurve=2, CenterEdge=3, FaceCenter=4, SketchPoint=7 (the old code
+        used 1/0, which are Undefined/Invalid). There is no "at coordinates"
+        type, so COORDINATES places a 3D-sketch point and builds the reference
+        point on it. Probed on SW2022; percent is 0-100, not 0-1."""
         doc = self.connection.get_active_doc()
         if not doc:
             raise Exception("No active document")
 
         point_type = args.get("type", "COORDINATES")
-
         sel.clear_selection(doc)
+        along_type, amount = 0, 0.0
 
         if point_type == "COORDINATES":
-            x = args.get("x", 0)
-            y = args.get("y", 0)
-            z = args.get("z", 0)
+            x, y, z = args.get("x", 0), args.get("y", 0), args.get("z", 0)
+            sm = doc.SketchManager
+            sm.Insert3DSketch(True)
+            prev = sm.AddToDB
+            try:
+                sm.AddToDB = True
+                spt = sm.CreatePoint(x / 1000.0, y / 1000.0, z / 1000.0)
+            finally:
+                sm.AddToDB = prev
+                sm.Insert3DSketch(True)   # close the 3D sketch
+            if spt is None:
+                raise Exception("Could not create the 3D sketch point for the reference point")
+            sel.clear_selection(doc)
+            ok = sel.select_entity_object(doc, spt, append=False, mark=0)
+            if not ok:
+                ok = doc.Extension.SelectByID2("", "EXTSKETCHPOINT", x / 1000.0, y / 1000.0, z / 1000.0,
+                                               False, 0, sel.make_callout(), 0)
+            if not ok:
+                raise Exception("Could not select the 3D sketch point")
+            ref_type, where = 7, f"at ({x}, {y}, {z}) mm"
 
-            # For coordinate-based points, we use InsertReferencePoint
-            # Select nothing, then create at coordinates
-            # swRefPointAlongCurve = 0, swRefPointOnFace = 1, swRefPointOnVertex = 2
-            feature = doc.FeatureManager.InsertReferencePoint(
-                4,              # Type: 4 = arbitrary coordinates
-                0,              # AlongCurveOption
-                x / 1000.0,    # X in meters
-                y / 1000.0,    # Y in meters
-                z / 1000.0,    # Z in meters
-            )
-
-            if not feature:
-                raise Exception("Failed to create reference point at coordinates")
-
-            feature_name = feature.Name
-            ref_id = None
-            if self.tracker:
-                ref_id = self.tracker.register_ref_geometry(feature_name, "point", parameters={
-                    "method": "COORDINATES",
-                    "x": x, "y": y, "z": z,
-                })
-
-            doc.ViewZoomtofit2()
-            logger.info(f"Reference point '{feature_name}' created at ({x}, {y}, {z}) mm")
-            return self._json_result(f"✓ Reference point '{feature_name}' created at ({x}, {y}, {z}) mm", id=ref_id, type="ref_point")
-
-        elif point_type == "ARC_CENTER":
+        elif point_type in ("ARC_CENTER", "ON_EDGE"):
             edge = args.get("edge")
             if not edge:
-                raise Exception("'edge' is required for ARC_CENTER type")
-            sel.select_edge(doc, edge["x"], edge["y"], edge["z"], append=False, mark=0)
-
-            feature = doc.FeatureManager.InsertReferencePoint(
-                3,      # Type: 3 = center
-                0, 0, 0, 0,
-            )
-
-            if not feature:
-                raise Exception("Failed to create reference point at arc center")
-
-            feature_name = feature.Name
-            ref_id = None
-            if self.tracker:
-                ref_id = self.tracker.register_ref_geometry(feature_name, "point", parameters={
-                    "method": "ARC_CENTER",
-                })
-
-            doc.ViewZoomtofit2()
-            logger.info(f"Reference point '{feature_name}' created at arc center")
-            return self._json_result(f"✓ Reference point '{feature_name}' created at arc center", id=ref_id, type="ref_point")
+                raise Exception(f"'edge' is required for {point_type} type")
+            if not sel.select_edge(doc, edge["x"], edge["y"], edge["z"], append=False, mark=0):
+                raise Exception(f"Could not select an edge at {edge} (see get_edges).")
+            if point_type == "ARC_CENTER":
+                ref_type, where = 3, "at arc center"
+            else:
+                percent = float(args.get("percent", 50))
+                ref_type, along_type, amount = 2, 1, percent
+                where = f"on edge at {percent}%"
 
         elif point_type == "FACE_CENTER":
             face = args.get("face")
             if not face:
                 raise Exception("'face' is required for FACE_CENTER type")
-            sel.select_face(doc, face["x"], face["y"], face["z"], append=False, mark=0)
-
-            feature = doc.FeatureManager.InsertReferencePoint(
-                1,      # Type: 1 = on face
-                0, 0, 0, 0,
-            )
-
-            if not feature:
-                raise Exception("Failed to create reference point on face")
-
-            feature_name = feature.Name
-            ref_id = None
-            if self.tracker:
-                ref_id = self.tracker.register_ref_geometry(feature_name, "point", parameters={
-                    "method": "FACE_CENTER",
-                })
-
-            doc.ViewZoomtofit2()
-            logger.info(f"Reference point '{feature_name}' created at face center")
-            return self._json_result(f"✓ Reference point '{feature_name}' created at face center", id=ref_id, type="ref_point")
-
-        elif point_type == "ON_EDGE":
-            edge = args.get("edge")
-            if not edge:
-                raise Exception("'edge' is required for ON_EDGE type")
-            sel.select_edge(doc, edge["x"], edge["y"], edge["z"], append=False, mark=0)
-
-            feature = doc.FeatureManager.InsertReferencePoint(
-                0,      # Type: 0 = along curve
-                0, 0, 0, 0,
-            )
-
-            if not feature:
-                raise Exception("Failed to create reference point on edge")
-
-            feature_name = feature.Name
-            ref_id = None
-            if self.tracker:
-                ref_id = self.tracker.register_ref_geometry(feature_name, "point", parameters={
-                    "method": "ON_EDGE",
-                })
-
-            doc.ViewZoomtofit2()
-            logger.info(f"Reference point '{feature_name}' created on edge")
-            return self._json_result(f"✓ Reference point '{feature_name}' created on edge", id=ref_id, type="ref_point")
+            if not sel.select_face(doc, face["x"], face["y"], face["z"], append=False, mark=0):
+                raise Exception(f"Could not select a face at {face} (see get_faces).")
+            ref_type, where = 4, "at face center"
 
         else:
             raise Exception(f"Unknown point type: {point_type}")
+
+        result = doc.FeatureManager.InsertReferencePoint(ref_type, along_type, amount, 1)
+        if isinstance(result, (tuple, list)):
+            created = [f for f in result if f is not None]
+        else:
+            created = [result] if result is not None else []
+        if not created:
+            raise Exception(f"Failed to create reference point ({point_type}). "
+                            "ARC_CENTER needs a circular edge; FACE_CENTER a face.")
+        feature = created[0]
+
+        location = None
+        try:
+            mp = com_prop(com_prop(feature, "GetSpecificFeature2"), "GetRefPoint")
+            location = [round(v * 1000, 3) for v in mp.ArrayData]
+        except Exception:
+            pass
+
+        feature_name = feature.Name
+        ref_id = None
+        if self.tracker:
+            ref_id = self.tracker.register_ref_geometry(feature_name, "point", parameters={
+                "method": point_type, "location_mm": location,
+            })
+        doc.ViewZoomtofit2()
+        msg = f"✓ Reference point '{feature_name}' created {where}"
+        if location:
+            msg += f" — located at ({location[0]}, {location[1]}, {location[2]}) mm"
+        logger.info(msg)
+        return self._json_result(msg, id=ref_id, type="ref_point", location_mm=location)
 
     def coordinate_system(self, args: dict) -> str:
         doc = self.connection.get_active_doc()

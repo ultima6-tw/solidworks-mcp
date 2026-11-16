@@ -237,13 +237,17 @@ class HoleFeatureTools:
         if not sel.select_edge(doc, edge["x"], edge["y"], edge["z"]):
             raise Exception("Could not select edge for thread")
 
-        # InsertCosmeticThread3 creates a cosmetic thread annotation
-        # Params: ThreadLength, MinorDiameter, ...
-        feature = doc.InsertCosmeticThread3(
-            depth_m,        # Thread length in meters
-            diameter_m,     # Minor diameter in meters
-            0,              # Thread type: 0 = standard
-            True,           # Flip direction
+        # IFeatureManager.InsertCosmeticThread2(Type, Depth, Length, Note).
+        # (The previous call, IModelDoc2.InsertCosmeticThread3, does not
+        # exist; InsertCosmeticThread3 is on IFeatureManager with a different
+        # 7-argument, thread-standard signature.) Probed on SW2022 by reading
+        # the feature definition back: the 2nd argument becomes Diameter
+        # (minor, DiameterType=3) and the 3rd BlindDepth — despite the names.
+        feature = doc.FeatureManager.InsertCosmeticThread2(
+            0,              # swApplyCosmeticThread_Blind
+            diameter_m,     # -> minor diameter
+            depth_m,        # -> blind depth (thread length)
+            "",             # Note
         )
 
         if not feature:

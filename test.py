@@ -2276,6 +2276,85 @@ def test_mcp_circular_pattern(sw, template):
         return False
 
 
+@register_test("mcp_ref_point", "MCP Reference Point (all modes)", "MCP Tools",
+               "Reference points by coordinates, arc center, face center and along an edge; check locations", order=22)
+def test_mcp_ref_point(sw, template):
+    """ref_point used wrong swRefPointType_e codes (1 = Undefined, 0 = Invalid)
+    and a 5-argument InsertReferencePoint with coordinates that the API
+    does not have. COORDINATES now goes through a 3D-sketch point."""
+    try:
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_circle", {"radius": 10, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 30}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        cases = [
+            ({"type": "COORDINATES", "x": 30, "y": 30, "z": 30}, (30, 30, 30)),
+            ({"type": "ARC_CENTER", "edge": {"x": 10, "y": 0, "z": 0}}, (0, 0, 0)),
+            ({"type": "FACE_CENTER", "face": {"x": 0, "y": 0, "z": 30}}, (0, 0, 30)),
+            # half way round the r=10 circle from its start point (+X) is -X
+            ({"type": "ON_EDGE", "edge": {"x": 10, "y": 0, "z": 0}, "percent": 50}, (-10, 0, 0)),
+        ]
+        for args, want in cases:
+            r = server._route_tool("solidworks_ref_point", args)
+            loc = _mcp_json(r).get("location_mm")
+            if not loc or max(abs(a - b) for a, b in zip(loc, want)) > 0.01:
+                log(f"ref_point {args['type']}: location {loc} != expected {want}", "ERROR")
+                return False
+            log(f"ref_point {args['type']} at {loc}", "SUCCESS")
+        vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+        if abs(vol - math.pi * 100 * 30) > 1:
+            log(f"Reference points changed the body volume: {vol}", "ERROR")
+            return False
+        return True
+    except Exception as e:
+        log(f"mcp_ref_point FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_thread", "MCP Cosmetic Thread", "MCP Tools",
+               "Cosmetic thread on a cylinder edge; read back minor diameter and depth, volume unchanged", order=23)
+def test_mcp_thread(sw, template):
+    """thread called IModelDoc2.InsertCosmeticThread3, which does not exist."""
+    try:
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_circle", {"radius": 10, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 30}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        r = server._route_tool("solidworks_thread", {
+            "edge": {"x": 10, "y": 0, "z": 0}, "depth": 25, "diameter": 8})
+        if not _mcp_ok(r):
+            log(f"thread failed: {r}", "ERROR")
+            return False
+        name = _mcp_json(r)["id"].split(":", 1)[1]
+        from solidworks.com_utils import com_prop
+        fd = com_prop(sw.ActiveDoc.FeatureByName(name), "GetDefinition")
+        dia, depth = fd.Diameter * 1000, fd.BlindDepth * 1000
+        if abs(dia - 8) > 1e-6 or abs(depth - 25) > 1e-6:
+            log(f"Thread definition: diameter {dia} (want 8), depth {depth} (want 25)", "ERROR")
+            return False
+        vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+        if abs(vol - math.pi * 100 * 30) > 1:
+            log(f"Cosmetic thread changed the volume: {vol}", "ERROR")
+            return False
+        log(f"Thread: minor diameter {dia:g} mm, depth {depth:g} mm, volume unchanged", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_thread FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
