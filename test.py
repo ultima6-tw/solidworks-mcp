@@ -2812,6 +2812,106 @@ def test_mcp_sketch_dimension(sw, template):
         rect, dim, ("solidworks_set_dimension_value", {"dimX": 0, "dimY": 20, "value": 70})], 70 * 20 * 10))
 
 
+def _dimensioned_box(server, depth=20):
+    """40 wide x 30 high box (not square: SOLIDWORKS infers an Equal relation
+    on a square, so driving the width would drag the height along) whose width is the sketch dimension D1@<sketch> = 40.
+    Returns (sketch_param, extrude_param) from list_parameters, or None."""
+    R = server._route_tool
+    R("solidworks_new_part", {})
+    R("solidworks_create_sketch", {"plane": "Front"})
+    R("solidworks_sketch_rectangle", {"width": 40, "height": 30, "centerX": 0, "centerY": 0})
+    R("solidworks_sketch_dimension", {"entityPoints": [{"x": 0, "y": 15}], "dimX": 0, "dimY": 25, "value": 40})
+    R("solidworks_create_extrusion", {"depth": depth})
+    r = _call(server, "solidworks_list_parameters", {})
+    if not _mcp_ok(r):
+        log(f"list_parameters: {r}", "ERROR")
+        return None
+    params = _mcp_json(r)["parameters"]
+    log(f"list_parameters: {[(p['parameter'], p.get('value')) for p in params]}")
+    width = [p["parameter"] for p in params if abs(p.get("value", 0) - 40) < 1e-6]
+    depth_ = [p["parameter"] for p in params if abs(p.get("value", 0) - depth) < 1e-6]
+    if len(width) != 1 or len(depth_) != 1:
+        log("list_parameters did not report exactly one 40 mm width and one depth dimension", "ERROR")
+        return None
+    return width[0], depth_[0]
+
+
+@register_test("mcp_equations", "MCP Equations", "MCP Tools",
+               "list_parameters names -> add_equation depth = width/4 -> drive width -> delete_equation; volumes checked", order=36)
+def test_mcp_equations(sw, template):
+    server = create_mcp_server()
+    try:
+        names = _dimensioned_box(server)
+        if not names:
+            return False
+        width, depth = names
+        r = _call(server, "solidworks_add_equation", {"equation": f'"{depth}" = "{width}" / 4'})
+        if not _mcp_ok(r) or "⚠" in r:
+            log(f"add_equation: {r}", "ERROR")
+            return False
+        if not _expect_volume(server, "depth = 40/4", 40 * 30 * 10):
+            return False
+        eqs = _mcp_json(_call(server, "solidworks_list_equations"))["equations"]
+        log(f"list_equations: {eqs}")
+        if len(eqs) != 1 or depth not in eqs[0]["equation"]:
+            log("list_equations does not show the one equation", "ERROR")
+            return False
+        _call(server, "solidworks_set_parameter", {"parameter": width, "value": 80})
+        if not _expect_volume(server, "width 80 -> depth 20 via equation", 80 * 30 * 20):
+            return False
+        if not _mcp_ok(_call(server, "solidworks_delete_equation", {"index": eqs[0]["index"]})):
+            return False
+        if _mcp_json(_call(server, "solidworks_list_equations"))["equations"]:
+            log("equation still listed after delete", "ERROR")
+            return False
+        _call(server, "solidworks_set_parameter", {"parameter": width, "value": 40})
+        return _expect_volume(server, "after delete: width 40, depth stays 20", 40 * 30 * 20)
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
+@register_test("mcp_configurations", "MCP Configurations", "MCP Tools",
+               "add_configuration B, set_config_parameter depth 30 in B only, switch back and forth; volumes checked", order=37)
+def test_mcp_configurations(sw, template):
+    server = create_mcp_server()
+    try:
+        names = _dimensioned_box(server)
+        if not names:
+            return False
+        depth = names[1]
+        cfgs = _mcp_json(_call(server, "solidworks_list_configurations"))
+        base = cfgs["active"]
+        log(f"list_configurations: {cfgs['configurations']} active={base}")
+        if len(cfgs["configurations"]) != 1 or not base:
+            return False
+        if not _mcp_ok(_call(server, "solidworks_add_configuration", {"name": "B"})):
+            return False
+        r = _call(server, "solidworks_set_config_parameter", {"parameter": depth, "value": 30, "configuration": "B"})
+        if not _mcp_ok(r) or "⚠" in r:
+            log(f"set_config_parameter: {r}", "ERROR")
+            return False
+        if not _expect_volume(server, "config B: depth 30", 40 * 30 * 30):
+            return False
+        _call(server, "solidworks_switch_configuration", {"name": base})
+        if not _expect_volume(server, f"config {base}: depth still 20", 40 * 30 * 20):
+            return False
+        _call(server, "solidworks_switch_configuration", {"name": "B"})
+        if not _expect_volume(server, "back to B: depth 30", 40 * 30 * 30):
+            return False
+        cfgs = _mcp_json(_call(server, "solidworks_list_configurations"))
+        if sorted(cfgs["configurations"]) != sorted([base, "B"]) or cfgs["active"] != "B":
+            log(f"list_configurations after: {cfgs}", "ERROR")
+            return False
+        bad = _call(server, "solidworks_switch_configuration", {"name": "NoSuchConfig"})
+        if _mcp_ok(bad):
+            log("switching to a missing configuration did not report an error", "ERROR")
+            return False
+        log("missing configuration rejected", "SUCCESS")
+        return True
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
