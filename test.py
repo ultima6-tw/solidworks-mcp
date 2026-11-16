@@ -2129,6 +2129,99 @@ def test_mcp_small_entities(sw, template):
         return False
 
 
+@register_test("mcp_draft", "MCP Draft (inward + outward)", "MCP Tools",
+               "10-degree draft on two faces of a 40x40x50 block, verify volume both ways", order=19)
+def test_mcp_draft(sw, template):
+    """draft used to call IFeatureManager.InsertFeatureDraft, which does not
+    exist; it now uses InsertMultiFaceDraft (neutral plane mark 1, faces
+    mark 2)."""
+    try:
+        t = math.tan(math.radians(10))
+        expected = {False: 40 * (40 * 50 - t * 50 ** 2),   # faces taper inward
+                    True: 40 * (40 * 50 + t * 50 ** 2)}    # outward
+        for outward, want in expected.items():
+            server = create_mcp_server()
+            results = [
+                server._route_tool("solidworks_new_part", {}),
+                server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+                server._route_tool("solidworks_sketch_rectangle", {
+                    "width": 40, "height": 40, "centerX": 0, "centerY": 0}),
+                server._route_tool("solidworks_create_extrusion", {"depth": 50}),
+                server._route_tool("solidworks_draft", {
+                    "angle": 10, "neutralPlane": "Front", "outward": outward,
+                    "facesToDraft": [{"x": -20, "y": 0, "z": 25}, {"x": 20, "y": 0, "z": 25}]}),
+            ]
+            if not mcp_check_results(results):
+                return False
+            vol = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+            if abs(vol - want) > 1:
+                log(f"draft outward={outward}: volume {vol:.1f} != expected {want:.1f}", "ERROR")
+                return False
+            server._route_tool("solidworks_close_document", {})
+        log("Draft volumes correct in both directions", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_draft FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_ref_axis", "MCP Reference Axis", "MCP Tools",
+               "Axis from a cylindrical face and from a straight edge; circular edge gives a clear error", order=20)
+def test_mcp_ref_axis(sw, template):
+    """ref_axis used to call IFeatureManager.InsertRefAxis, which does not
+    exist; it now uses IModelDoc2.InsertAxis2 and finds the new RefAxis."""
+    try:
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_circle", {"radius": 20, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 40}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        r = server._route_tool("solidworks_ref_axis", {
+            "type": "CYLINDRICAL_FACE", "face": {"x": 20, "y": 0, "z": 20}})
+        if not _mcp_ok(r):
+            log(f"ref_axis from cylinder failed: {r}", "ERROR")
+            return False
+        # _route_tool raises on tool errors (call_tool turns them into ❌ text)
+        try:
+            r_bad = server._route_tool("solidworks_ref_axis", {
+                "type": "EDGE", "edge": {"x": 20, "y": 0, "z": 0}})
+        except Exception as e:
+            r_bad = f"❌ {e}"
+        if _mcp_ok(r_bad) or "CYLINDRICAL_FACE" not in r_bad:
+            log(f"Circular edge should fail with a CYLINDRICAL_FACE hint, got: {r_bad}", "ERROR")
+            return False
+        server._route_tool("solidworks_close_document", {})
+
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_rectangle", {"width": 40, "height": 40, "centerX": 0, "centerY": 0}),
+            server._route_tool("solidworks_create_extrusion", {"depth": 40}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        r2 = server._route_tool("solidworks_ref_axis", {
+            "type": "EDGE", "edge": {"x": 20, "y": 20, "z": 20}})
+        if not _mcp_ok(r2):
+            log(f"ref_axis from straight edge failed: {r2}", "ERROR")
+            return False
+        tree = _mcp_json(server._route_tool("solidworks_get_feature_tree", {}))["tree"]
+        if not any(n.get("type") == "RefAxis" for n in tree):
+            log(f"No RefAxis in feature tree: {tree}", "ERROR")
+            return False
+        log("Reference axes created; circular edge rejected with a hint", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"mcp_ref_axis FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

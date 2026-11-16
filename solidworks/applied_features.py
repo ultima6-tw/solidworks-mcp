@@ -567,6 +567,8 @@ class AppliedFeatureTools:
 
         angle_rad = math.radians(args["angle"])
         outward = args.get("outward", False)
+        # measured before any selection is made (see chamfer)
+        volume_before = _body_volume_mm3(doc)
 
         sel.clear_selection(doc)
 
@@ -575,22 +577,36 @@ class AppliedFeatureTools:
         if not sel.select_plane_with_mark(doc, plane_name, mark=1, append=False):
             raise Exception(f"Could not select neutral plane: {plane_name}")
 
-        # Select faces to draft (append_first: the neutral plane is already
-        # selected with mark=1 and must stay selected)
+        # Select faces to draft with mark=2 (append_first: the neutral plane is
+        # already selected with mark=1 and must stay selected).
+        # Probed on SW2022: neutral plane mark 1 + faces mark 2 works. Faces
+        # with mark 0 make the call return None, and with NO mark-1 entity
+        # SOLIDWORKS raises a modal "draft direction not defined" box that
+        # blocks the whole COM session — so these marks must not change.
         faces = args["facesToDraft"]
-        count = _select_all_or_raise(doc, faces, "face", mark=0,
+        count = _select_all_or_raise(doc, faces, "face", mark=2,
                                      append_first=True, what="draft")
 
-        # InsertFeatureDraft: type, angle, outward
-        # Type 0 = Neutral plane draft
-        feature = doc.FeatureManager.InsertFeatureDraft(
-            0,          # DraftType: 0 = Neutral Plane
-            angle_rad,  # Draft angle in radians
-            outward,    # Draft outward
+        # IFeatureManager.InsertMultiFaceDraft(Angle, FlipDir, EdgeDraft,
+        #   PropType, IsStepDraft, IsBodyDraft). (The previous call,
+        # InsertFeatureDraft, does not exist in the SOLIDWORKS API.)
+        feature = doc.FeatureManager.InsertMultiFaceDraft(
+            angle_rad,  # Angle (radians)
+            outward,    # FlipDir: False = faces taper inward from the neutral plane
+            False,      # EdgeDraft
+            0,          # PropType: swFacePropNone
+            False,      # IsStepDraft
+            False,      # IsBodyDraft
         )
 
         if not feature:
-            raise Exception("Failed to create draft. Verify selections are correct.")
+            raise Exception("Failed to create draft. Verify the neutral plane and "
+                            "that the face points lie on planar faces of the body.")
+        if volume_before is not None:
+            volume_after = _body_volume_mm3(doc)
+            if volume_after is not None and abs(volume_after - volume_before) < 1e-3:
+                raise Exception(f"Draft '{feature.Name}' was created but did not "
+                                "change the body — check the selected faces.")
 
         feature_name = feature.Name
         doc.ViewZoomtofit2()

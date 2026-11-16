@@ -121,7 +121,7 @@ class ReferenceGeometryTools:
                         },
                         "edge": {
                             "type": "object",
-                            "description": "Point on an edge ({x, y, z} in mm) for EDGE type",
+                            "description": "Point on a STRAIGHT edge ({x, y, z} in mm) for EDGE type. For a hole or cylinder axis use CYLINDRICAL_FACE instead (circular edges are rejected).",
                             "properties": {
                                 "x": {"type": "number"},
                                 "y": {"type": "number"},
@@ -383,28 +383,52 @@ class ReferenceGeometryTools:
             if not p1 or not p2:
                 raise Exception("Both point1 and point2 are required for TWO_POINTS type")
 
-            sel.select_vertex(doc, p1["x"], p1["y"], p1["z"], mark=0, append=False)
-            sel.select_vertex(doc, p2["x"], p2["y"], p2["z"], mark=0, append=True)
+            ok = (sel.select_vertex(doc, p1["x"], p1["y"], p1["z"], mark=0, append=False)
+                  and sel.select_vertex(doc, p2["x"], p2["y"], p2["z"], mark=0, append=True))
+            if not ok:
+                raise Exception("Could not select both vertices — point1/point2 must be "
+                                "existing vertices of the body (see get_vertices).")
 
         elif axis_type == "CYLINDRICAL_FACE":
             face = args.get("face")
             if not face:
                 raise Exception("'face' is required for CYLINDRICAL_FACE type")
-            sel.select_face(doc, face["x"], face["y"], face["z"], append=False, mark=0)
+            if not sel.select_face(doc, face["x"], face["y"], face["z"], append=False, mark=0):
+                raise Exception(f"Could not select a face at {face} — use a point ON the "
+                                "cylindrical/conical face (see get_faces).")
 
         elif axis_type == "EDGE":
             edge = args.get("edge")
             if not edge:
                 raise Exception("'edge' is required for EDGE type")
-            sel.select_edge(doc, edge["x"], edge["y"], edge["z"], append=False, mark=0)
+            if not sel.select_edge(doc, edge["x"], edge["y"], edge["z"], append=False, mark=0):
+                raise Exception(f"Could not select an edge at {edge} (see get_edges).")
 
         else:
             raise Exception(f"Unknown axis type: {axis_type}")
 
-        feature = doc.FeatureManager.InsertRefAxis()
+        # IModelDoc2.InsertAxis2(AutoSize) returns a bool, not the feature, so
+        # the new RefAxis is found by diffing the tree. (The previous call,
+        # IFeatureManager.InsertRefAxis, does not exist in the SOLIDWORKS API.)
+        # Probed on SW2022: cylindrical face and two planes work; a CIRCULAR
+        # edge is rejected (SOLIDWORKS needs a straight edge for this type).
+        def _ref_axes():
+            names, f = [], doc.FirstFeature
+            while f is not None:
+                if f.GetTypeName2 == "RefAxis":
+                    names.append(f)
+                f = f.GetNextFeature
+            return names
 
-        if not feature:
-            raise Exception("Failed to create reference axis. Verify selections.")
+        before = {f.Name for f in _ref_axes()}
+        ok = doc.InsertAxis2(True)
+        new_axes = [f for f in _ref_axes() if f.Name not in before]
+        if not ok or not new_axes:
+            hint = (" For a circular edge use type CYLINDRICAL_FACE with a point on "
+                    "the cylinder instead — EDGE needs a straight edge."
+                    if axis_type == "EDGE" else "")
+            raise Exception("Failed to create reference axis from the selection." + hint)
+        feature = new_axes[-1]
 
         feature_name = feature.Name
         ref_id = None
