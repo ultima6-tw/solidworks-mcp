@@ -3,6 +3,7 @@ SolidWorks Sketching Tools
 Handles sketch creation and drawing operations with spatial tracking
 """
 
+import contextlib
 import json
 import logging
 import math
@@ -14,12 +15,48 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
-def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
-    """Find and auto-dismiss the SolidWorks 'Modify' dimension dialog.
+# swUserPreferenceToggle_e.swInputDimValOnCreate (swconst.tlb) — Tools >
+# Options > General > "Input dimension value". While ON, AddDimension2 opens
+# the modal "Modify" dialog and blocks until someone answers it.
+SW_INPUT_DIM_VAL_ON_CREATE = 10
 
-    AddDimension2 triggers a blocking popup (Win32 class #32770, title
-    "Modify").  Call this in a background thread *before* AddDimension2
-    so it can dismiss the dialog as soon as it appears.
+# Title of that dialog per UI language. Only used by the fallback dismisser;
+# the preference switch above is language-independent. Verified titles only:
+# "Modify" (English, upstream), "修改" (Traditional Chinese, SW2022).
+_MODIFY_DIALOG_TITLES = ("Modify", "修改")
+
+
+@contextlib.contextmanager
+def no_dimension_value_prompt(app):
+    """Temporarily turn off "Input dimension value" so AddDimension2 never
+    opens the blocking Modify dialog, then restore the user's setting.
+    Never raises: if the preference cannot be read/changed, the caller still
+    has dismiss_modify_dialog() as a fallback."""
+    previous = None
+    try:
+        previous = bool(app.GetUserPreferenceToggle(SW_INPUT_DIM_VAL_ON_CREATE))
+        if previous:
+            app.SetUserPreferenceToggle(SW_INPUT_DIM_VAL_ON_CREATE, False)
+    except Exception as e:
+        logger.warning(f"could not switch off 'Input dimension value': {e}")
+        previous = None
+    try:
+        yield
+    finally:
+        if previous:
+            try:
+                app.SetUserPreferenceToggle(SW_INPUT_DIM_VAL_ON_CREATE, True)
+            except Exception as e:
+                logger.warning(f"could not restore 'Input dimension value': {e}")
+
+
+def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
+    """Fallback: find and auto-dismiss the SolidWorks 'Modify' dimension dialog.
+
+    AddDimension2 can trigger a blocking popup (Win32 class #32770, title
+    "Modify" — localized, e.g. "修改" in Chinese). Prefer
+    no_dimension_value_prompt(), which stops the dialog from opening at all;
+    run this in a background thread *before* AddDimension2 as a safety net.
     """
     import win32gui
     import win32con
@@ -28,12 +65,13 @@ def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
     time.sleep(delay)
     while time.monotonic() < deadline:
         try:
-            hwnd = win32gui.FindWindow("#32770", "Modify")
-            if hwnd and win32gui.IsWindowVisible(hwnd):
-                win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
-                win32gui.PostMessage(hwnd, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
-                logger.info("Auto-dismissed 'Modify' dimension dialog")
-                return
+            for title in _MODIFY_DIALOG_TITLES:
+                hwnd = win32gui.FindWindow("#32770", title)
+                if hwnd and win32gui.IsWindowVisible(hwnd):
+                    win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
+                    win32gui.PostMessage(hwnd, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
+                    logger.info(f"Auto-dismissed '{title}' dimension dialog")
+                    return
         except Exception:
             pass
         time.sleep(0.1)
@@ -1913,8 +1951,10 @@ class SketchingTools:
             if not success:
                 raise Exception(f"Failed to select entity at ({pt['x']}, {pt['y']}) mm")
 
-        # AddDimension2 triggers a blocking "Modify" dialog in SolidWorks.
-        # A background thread auto-dismisses it (see dismiss_modify_dialog).
+        # AddDimension2 opens a blocking "Modify" dialog while the user
+        # preference "Input dimension value" is on. Switch it off for this
+        # call (language-independent); the background dismisser stays as a
+        # safety net in case the preference could not be changed.
         dismiss_thread = threading.Thread(target=dismiss_modify_dialog, daemon=True)
         dismiss_thread.start()
 
@@ -1923,11 +1963,12 @@ class SketchingTools:
         sm.DisplayWhenAdded = False
 
         try:
-            dim_display = doc.AddDimension2(
-                args["dimX"] / 1000.0,
-                args["dimY"] / 1000.0,
-                0.0
-            )
+            with no_dimension_value_prompt(self.connection.app):
+                dim_display = doc.AddDimension2(
+                    args["dimX"] / 1000.0,
+                    args["dimY"] / 1000.0,
+                    0.0
+                )
 
             if not dim_display:
                 raise Exception("Failed to add dimension. Ensure valid entities are selected.")

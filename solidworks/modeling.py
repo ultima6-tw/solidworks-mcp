@@ -14,6 +14,48 @@ from .com_utils import com_prop, exit_active_sketch
 logger = logging.getLogger(__name__)
 
 MATERIAL_DATABASE = "SOLIDWORKS Materials"
+_MATERIAL_DB_FILE = "solidworks materials.sldmat"
+_material_name_cache = {}
+
+
+def _material_ids(path):
+    """{matid: name} from a .sldmat database (UTF-16 XML)."""
+    import re
+    if path not in _material_name_cache:
+        try:
+            with open(path, encoding="utf-16") as f:
+                text = f.read()
+            _material_name_cache[path] = {
+                mid: name for name, mid in
+                re.findall(r'<material name="([^"]+)" matid="(\d+)"', text)}
+        except OSError:
+            _material_name_cache[path] = {}
+    return _material_name_cache[path]
+
+
+def localized_material_name(app, english_name):
+    """Translate an English SOLIDWORKS material name into the installed UI
+    language using the per-language databases shipped in <install>\\lang\\
+    <language>\\sldmaterials — every entry carries the same `matid` in every
+    language (verified: English vs Chinese, 220/220 ids match). Returns None
+    when no translation is needed or possible."""
+    import os
+    try:
+        lang = str(com_prop(app, "GetCurrentLanguage") or "").strip()
+        exe = str(com_prop(app, "GetExecutablePath") or "").strip()
+    except Exception:
+        return None
+    if not lang or lang.lower() == "english" or not exe:
+        return None
+    install_dir = os.path.dirname(exe) if exe.lower().endswith(".exe") else exe
+    lang_root = os.path.join(install_dir, "lang")
+    english = _material_ids(os.path.join(lang_root, "english", "sldmaterials", _MATERIAL_DB_FILE))
+    local = _material_ids(os.path.join(lang_root, lang, "sldmaterials", _MATERIAL_DB_FILE))
+    wanted = english_name.strip().lower()
+    for mid, name in english.items():
+        if name.lower() == wanted:
+            return local.get(mid)
+    return None
 
 
 class ModelingTools:
@@ -462,22 +504,35 @@ class ModelingTools:
         material = args["material"].strip()
         config = args.get("configuration", "") or ""
 
-        doc.SetMaterialPropertyName2(config, MATERIAL_DATABASE, material)
-        doc.ForceRebuild3(True)
+        # Material names in the database follow the SOLIDWORKS UI language
+        # ("6061 Alloy" is "6061 合金" on a Chinese install). Try the name as
+        # given, then its translation into the installed language.
+        candidates = [material]
+        localized = localized_material_name(self.connection.app, material)
+        if localized and localized.lower() != material.lower():
+            candidates.append(localized)
 
-        # Read back to confirm the name matched an actual database entry
-        db = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
-        applied = doc.GetMaterialPropertyName2(config, db)
-        if not applied or applied.strip().lower() != material.lower():
+        applied = ""
+        for name in candidates:
+            doc.SetMaterialPropertyName2(config, MATERIAL_DATABASE, name)
+            doc.ForceRebuild3(True)
+            # Read back to confirm the name matched an actual database entry
+            db = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BSTR, "")
+            applied = doc.GetMaterialPropertyName2(config, db) or ""
+            if applied.strip().lower() == name.lower():
+                break
+        else:
             raise Exception(
                 f"Material '{material}' was not applied (document reports {applied!r}). "
-                f"Use the exact name from the SOLIDWORKS Materials database, "
-                f"e.g. '6061 Alloy', 'Plain Carbon Steel', 'Alloy Steel', 'AISI 1020', 'Brass', 'ABS'."
+                f"Use a name from the SOLIDWORKS Materials database — English names "
+                f"such as '6061 Alloy', 'Plain Carbon Steel', 'Alloy Steel', 'AISI 1020', "
+                f"'Brass', 'ABS' work on any UI language, as do the localized names."
             )
 
         logger.info(f"Material set: {applied}")
+        note = f" (localized name of '{material}')" if applied.lower() != material.lower() else ""
         return self._json_result(
-            f"✓ Material '{applied}' assigned. Mass properties now use its density.",
+            f"✓ Material '{applied}'{note} assigned. Mass properties now use its density.",
             material=applied,
             type="material",
         )

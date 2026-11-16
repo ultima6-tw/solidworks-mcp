@@ -512,7 +512,7 @@ class AppliedFeatureTools:
             # was NOT there before this call (newest first).
             features = doc.FeatureManager.GetFeatures(True)
             for f in reversed(features or []):
-                if "Shell" in f.Name and f.Name not in names_before:
+                if f.GetTypeName2 == "Shell" and f.Name not in names_before:
                     feature = f
                     break
 

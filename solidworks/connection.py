@@ -323,6 +323,15 @@ class SolidWorksConnection:
         """Ensure we have a live connection, reconnecting if needed."""
         if self.is_alive():
             return
+        if self.app is None:
+            # Never connected yet — not a dead connection, so no warning and
+            # no 2 s "let SolidWorks stabilize" pause.
+            if self.connect():
+                return
+            raise Exception(
+                "Failed to connect to SolidWorks. "
+                "Ensure SolidWorks is running and responsive."
+            )
         logger.warning("SolidWorks COM connection is dead, reconnecting...")
         if not self.reconnect():
             raise Exception(

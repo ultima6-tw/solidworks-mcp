@@ -170,10 +170,73 @@ def new_part(sw, template):
     return doc
 
 
+# ---------------------------------------------------------------------------
+# Language-independent feature names
+# ---------------------------------------------------------------------------
+# SOLIDWORKS names new features in the UI language ("Sketch1" is "草圖1" on a
+# Chinese UI), and the standard plane names come from the part template. The
+# tests are written with the English default names; find_feature()/N() map such a
+# name to the real feature by type + creation order, so the suite also runs
+# on non-English installs.
+_DEFAULT_NAME_TYPES = {
+    "Sketch": ("ProfileFeature",),
+    "Boss-Extrude": ("Extrusion",),
+    "Cut-Extrude": ("ICE", "Cut"),
+    "Fillet": ("Fillet",),
+    "Chamfer": ("Chamfer",),
+    "Coordinate System": ("CoordSys",),
+}
+
+
+def _features_in_order(doc):
+    out, f = [], doc.FirstFeature
+    while f is not None and len(out) < 5000:
+        out.append(f)
+        f = f.GetNextFeature
+    return out
+
+
+def find_feature(doc, name):
+    """doc.FeatureByName(name), falling back to type+ordinal for default
+    English names on localized SOLIDWORKS. Returns None if not found."""
+    f = doc.FeatureByName(name)
+    if f is not None:
+        return f
+    key = sel.standard_plane_key(name)
+    if key:
+        return sel.resolve_plane_feature(doc, key)
+    import re
+    m = re.fullmatch(r"(.*?)(\d+)", name)
+    if not m or m.group(1) not in _DEFAULT_NAME_TYPES:
+        return None
+    types, n = _DEFAULT_NAME_TYPES[m.group(1)], int(m.group(2))
+    seen = []
+    for f in _features_in_order(doc):
+        try:
+            if f.GetTypeName2 in types and f.Name not in seen:
+                seen.append(f.Name)
+                if len(seen) == n:
+                    return f
+        except Exception:
+            continue
+    return None
+
+
+def N(doc, name):
+    """Actual (possibly localized) name of the feature the English default
+    `name` refers to; the input unchanged if it cannot be resolved."""
+    f = find_feature(doc, name)
+    return f.Name if f is not None else name
+
+
+def is_standard_plane(doc, f):
+    return f.Name in sel.get_standard_plane_names(doc).values()
+
+
 def new_sketch_on_front(sw, template):
     """Create a new part and open a sketch on the Front Plane."""
     model = sw.NewDocument(template, 0, 0, 0)
-    front_plane = model.FeatureByName("Front Plane")
+    front_plane = find_feature(model, "Front Plane")
     model.ClearSelection2(True)
     front_plane.Select2(False, 0)
     model.SketchManager.InsertSketch(True)
@@ -257,13 +320,13 @@ def make_cube(sw, template, size_mm=100):
     """Create a part with a cube of given size. Returns the model."""
     size_m = size_mm / 1000.0
     model = sw.NewDocument(template, 0, 0, 0)
-    front_plane = model.FeatureByName("Front Plane")
+    front_plane = find_feature(model, "Front Plane")
     model.ClearSelection2(True)
     front_plane.Select2(False, 0)
     model.SketchManager.InsertSketch(True)
     model.SketchManager.CreateCornerRectangle(0.0, 0.0, 0.0, size_m, size_m, 0.0)
     exit_sketch(model)
-    sketch1 = model.FeatureByName("Sketch1")
+    sketch1 = find_feature(model, "Sketch1")
     model.ClearSelection2(True)
     sketch1.Select2(False, 0)
     feat = model.FeatureManager.FeatureExtrusion2(
@@ -286,14 +349,14 @@ def make_cube(sw, template, size_mm=100):
 def test_basic_cube(sw, template):
     try:
         model = sw.NewDocument(template, 0, 0, 0)
-        front_plane = model.FeatureByName("Front Plane")
+        front_plane = find_feature(model, "Front Plane")
         model.ClearSelection2(True)
         front_plane.Select2(False, 0)
         model.SketchManager.InsertSketch(True)
         model.SketchManager.CreateCornerRectangle(0.0, 0.0, 0.0, 0.1, 0.1, 0.0)
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -409,7 +472,7 @@ def test_sketch_polygon(sw, template):
 
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -456,7 +519,7 @@ def test_sketch_ellipse(sw, template):
 
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -495,7 +558,7 @@ def test_sketch_slot(sw, template):
 
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -643,7 +706,7 @@ def test_toggle_construction(sw, template):
                "Draw a line, add a dimension, set its value, then modify it", order=11)
 def test_sketch_dimension(sw, template):
     import threading
-    from solidworks.sketching import dismiss_modify_dialog
+    from solidworks.sketching import dismiss_modify_dialog, no_dimension_value_prompt
 
     try:
         model = new_sketch_on_front(sw, template)
@@ -671,7 +734,8 @@ def test_sketch_dimension(sw, template):
         sm.AddToDB = True
         sm.DisplayWhenAdded = False
         try:
-            dim_display = model.AddDimension2(0.025, -0.01, 0.0)
+            with no_dimension_value_prompt(sw):
+                dim_display = model.AddDimension2(0.025, -0.01, 0.0)
         finally:
             sm.AddToDB = False
             sm.DisplayWhenAdded = True
@@ -734,14 +798,14 @@ def test_sketch_dimension(sw, template):
 def test_mass_properties(sw, template):
     try:
         model = sw.NewDocument(template, 0, 0, 0)
-        front_plane = model.FeatureByName("Front Plane")
+        front_plane = find_feature(model, "Front Plane")
         model.ClearSelection2(True)
         front_plane.Select2(False, 0)
         model.SketchManager.InsertSketch(True)
         model.SketchManager.CreateCornerRectangle(0.0, 0.0, 0.0, 0.1, 0.1, 0.0)
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -792,14 +856,14 @@ def test_mass_properties(sw, template):
 def test_cut_extrusion(sw, template):
     try:
         model = sw.NewDocument(template, 0, 0, 0)
-        front_plane = model.FeatureByName("Front Plane")
+        front_plane = find_feature(model, "Front Plane")
         model.ClearSelection2(True)
         front_plane.Select2(False, 0)
         model.SketchManager.InsertSketch(True)
         model.SketchManager.CreateCornerRectangle(0.0, 0.0, 0.0, 0.1, 0.1, 0.0)
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
         feat = model.FeatureManager.FeatureExtrusion2(
@@ -830,7 +894,7 @@ def test_cut_extrusion(sw, template):
         model.ClearSelection2(True)
         model.SketchManager.InsertSketch(True)
 
-        sketch2 = model.FeatureByName("Sketch2")
+        sketch2 = find_feature(model, "Sketch2")
         if not sketch2:
             log("Could not find Sketch2", "ERROR")
             return False
@@ -959,7 +1023,7 @@ def test_shell(sw, template):
         shell_found = False
         if features:
             for f in features:
-                if "Shell" in f.Name:
+                if f.GetTypeName2 == "Shell":  # type name is language-independent
                     shell_found = True
                     break
         if not shell_found:
@@ -990,7 +1054,7 @@ def test_revolve(sw, template):
 
         exit_sketch(model)
 
-        sketch1 = model.FeatureByName("Sketch1")
+        sketch1 = find_feature(model, "Sketch1")
         model.ClearSelection2(True)
         sketch1.Select2(False, 0)
 
@@ -1027,16 +1091,18 @@ def test_ref_plane(sw, template):
         # In SW2025, SelectByID2 with type "PLANE" works (not "DATUMPLANE")
         callout = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
         model.ClearSelection2(True)
-        ok = model.Extension.SelectByID2(
-            "Front Plane", "PLANE", 0, 0, 0,
+        ok = model.Extension.SelectByID2(N(model, "Front Plane"), "PLANE", 0, 0, 0,
             False, 0, callout, 0
         )
         if not ok:
             log("Could not select Front Plane", "ERROR")
             return False
 
-        # flags=5 works reliably in SW2025 for offset planes
-        feature = model.FeatureManager.InsertRefPlane(5, 0.05, 0, 0, 0, 0)
+        # swRefPlaneReferenceConstraints_e is a bit-flag enum (swconst.tlb):
+        # Parallel=1, Coincident=4, Distance=8. The old value 5 meant
+        # Parallel+Coincident — the plane landed ON Front and the distance
+        # was ignored, which silently broke the loft test below.
+        feature = model.FeatureManager.InsertRefPlane(8, 0.05, 0, 0, 0, 0)
 
         # InsertRefPlane may return None even on success; check feature tree
         if not feature:
@@ -1044,13 +1110,20 @@ def test_ref_plane(sw, template):
             features = model.FeatureManager.GetFeatures(True)
             if features:
                 for f in features:
-                    if "Plane" in f.Name and f.Name != "Front Plane" \
-                            and f.Name != "Top Plane" and f.Name != "Right Plane":
+                    if f.GetTypeName2 == "RefPlane" and not is_standard_plane(model, f):
                         feature = f
                         break
 
         if not feature:
             log("InsertRefPlane returned None and no new plane in feature tree", "ERROR")
+            return False
+
+        # Verify the offset really is 50mm (a coincident plane also "exists")
+        from solidworks.com_utils import com_prop
+        params = list(com_prop(com_prop(feature, "GetSpecificFeature2"), "GetRefPlaneParams"))
+        z_mm = abs(params[2]) * 1000.0  # origin z; Front plane normal is model Z
+        if abs(z_mm - 50.0) > 0.01:
+            log(f"Reference plane is at {z_mm:.3f}mm from Front, expected 50mm", "ERROR")
             return False
 
         log("Reference plane created (50mm offset from Front)", "SUCCESS")
@@ -1076,25 +1149,22 @@ def test_loft(sw, template):
         log(f"Sketch 1: {sketch1_name}", "SUCCESS")
 
         # Create offset reference plane (80mm from Front)
-        # Use SelectByID2 with "PLANE" type and flags=5 (proven in SW2025)
+        # Use SelectByID2 with "PLANE" type and flags=8 (Distance)
         callout = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
         model.ClearSelection2(True)
-        ok = model.Extension.SelectByID2(
-            "Front Plane", "PLANE", 0, 0, 0, False, 0, callout, 0
+        ok = model.Extension.SelectByID2(N(model, "Front Plane"), "PLANE", 0, 0, 0, False, 0, callout, 0
         )
         if not ok:
             log("Could not select Front Plane for ref plane", "ERROR")
             return False
-        ref_feat = model.FeatureManager.InsertRefPlane(5, 0.08, 0, 0, 0, 0)
+        ref_feat = model.FeatureManager.InsertRefPlane(8, 0.08, 0, 0, 0, 0)
         if not ref_feat:
             # Fallback: check feature tree for a new plane
             model.ForceRebuild3(True)
             features = model.FeatureManager.GetFeatures(True)
             if features:
                 for f in features:
-                    if "Plane" in f.Name and f.Name not in (
-                        "Front Plane", "Top Plane", "Right Plane"
-                    ):
+                    if f.GetTypeName2 == "RefPlane" and not is_standard_plane(model, f):
                         ref_feat = f
                         break
         if not ref_feat:
@@ -2014,7 +2084,7 @@ def test_assembly_doc_lifecycle(sw, template):
         # Switching back must restore the cube's tracked state
         _mcp_json(server._route_tool("solidworks_activate_document", {"name": "lifecycle_cube"}))
         state1 = _mcp_json(server._route_tool("solidworks_get_state", {}))
-        if not any("Boss-Extrude" in f["name"] for f in state1["features"]):
+        if not any(f.get("type") == "extrusion" for f in state1["features"]):
             log(f"Cube scope lost after switching: {state1['features']}", "ERROR")
             return False
 
@@ -2157,7 +2227,7 @@ def test_assembly_state(sw, template):
         # The part's scope must still hold its feature state
         _mcp_json(server._route_tool("solidworks_activate_document", {"name": "state_cube"}))
         pstate = _mcp_json(server._route_tool("solidworks_get_state", {}))
-        if not any("Boss-Extrude" in f["name"] for f in pstate["features"]):
+        if not any(f.get("type") == "extrusion" for f in pstate["features"]):
             log(f"Part scope lost after assembly work: {pstate['features']}", "ERROR")
             return False
         if pstate.get("body", {}).get("size", {}).get("x") != 25.0:
@@ -2185,17 +2255,19 @@ def test_parametric_tools(sw, template):
         _mcp_json(server._route_tool("solidworks_new_part", {}))
         _mcp_json(server._route_tool("solidworks_create_sketch", {"plane": "Front"}))
         _mcp_json(server._route_tool("solidworks_sketch_rectangle", {"x1": 0, "y1": 0, "x2": 100, "y2": 100}))
-        _mcp_json(server._route_tool("solidworks_create_extrusion", {"depth": 100}))
+        ext = _mcp_json(server._route_tool("solidworks_create_extrusion", {"depth": 100}))
+        # Use the names the tools return (localized on non-English SOLIDWORKS)
+        ext_name = ext["id"].split(":", 1)[1]
         _mcp_json(server._route_tool("solidworks_set_material", {"material": "6061 Alloy"}))
         mp = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))
         if abs(mp["mass_g"] - 2700.0) > 1:
             log(f"6061 cube should be 2700g, got {mp['mass_g']}", "ERROR")
             return False
 
-        _mcp_json(server._route_tool("solidworks_coordinate_system",
-                                     {"origin": {"x": 100, "y": 100, "z": 100}}))
+        cs = _mcp_json(server._route_tool("solidworks_coordinate_system",
+                                          {"origin": {"x": 100, "y": 100, "z": 100}}))
         mp = _mcp_json(server._route_tool("solidworks_get_mass_properties",
-                                          {"coordinateSystem": "Coordinate System1"}))
+                                          {"coordinateSystem": cs["id"]}))
         com = mp["centerOfMass_mm"]
         if not all(abs(com[k] + 50) < 0.1 for k in ("x", "y", "z")):
             log(f"CS-relative COM should be (-50,-50,-50), got {com}", "ERROR")
@@ -2203,7 +2275,7 @@ def test_parametric_tools(sw, template):
 
         # set_parameter: extrusion depth 100 -> 40
         _mcp_json(server._route_tool("solidworks_set_parameter",
-                                     {"parameter": "D1@Boss-Extrude1", "value": 40}))
+                                     {"parameter": f"D1@{ext_name}", "value": 40}))
         mp = _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))
         if abs(mp["volume_mm3"] - 400000) > 1:
             log(f"After depth 40, volume should be 400000, got {mp['volume_mm3']}", "ERROR")
@@ -2254,8 +2326,9 @@ def test_enriched_state_and_tags(sw, template):
         _mcp_json(server._route_tool("solidworks_sketch_rectangle", {
             "centerX": 50, "centerY": 50, "width": 100, "height": 100}))
         _mcp_json(server._route_tool("solidworks_create_extrusion", {"depth": 100}))
-        _mcp_json(server._route_tool("solidworks_fillet", {
+        fil = _mcp_json(server._route_tool("solidworks_fillet", {
             "radius": 10, "edges": [{"x": 50, "y": 100, "z": 100}]}))
+        fillet_name = fil["id"].split(":", 1)[1]  # "Fillet1" (localized on non-English UI)
 
         state = _mcp_json(server._route_tool("solidworks_get_state", {}))
         body = state.get("body", {})
@@ -2272,16 +2345,16 @@ def test_enriched_state_and_tags(sw, template):
             return False
 
         faces = _mcp_json(server._route_tool("solidworks_get_faces", {}))
-        if not any(f.get("feature") == "Fillet1" for f in faces["faces"]):
-            log(f"Fillet1 face tag missing: {faces['faces']}", "ERROR")
+        if not any(f.get("feature") == fillet_name for f in faces["faces"]):
+            log(f"{fillet_name} face tag missing: {faces['faces']}", "ERROR")
             return False
         if not all(f.get("feature") for f in faces["faces"]):
             log("Some faces missing feature tags", "ERROR")
             return False
 
         edges = _mcp_json(server._route_tool("solidworks_get_edges", {}))
-        if not any("Fillet1" in (e.get("features") or []) for e in edges["edges"]):
-            log(f"Fillet1 edge tag missing", "ERROR")
+        if not any(fillet_name in (e.get("features") or []) for e in edges["edges"]):
+            log(f"{fillet_name} edge tag missing", "ERROR")
             return False
 
         log("Enriched get_state + face/edge feature tagging verified", "SUCCESS")
@@ -2302,6 +2375,7 @@ def test_enriched_state_and_tags(sw, template):
 def test_integration_suite(sw, template):
     """Full integration test from original test.py, adapted to accept sw/template."""
     global PASS, FAIL
+    fail_at_start = FAIL  # the suite fails if ANY sub-check below fails
 
     # --- Part creation + plane selection ---
     subsection("Part creation & plane selection")
@@ -2314,7 +2388,7 @@ def test_integration_suite(sw, template):
 
     for plane in ("Front Plane", "Top Plane", "Right Plane"):
         try:
-            feat = doc.FeatureByName(plane)
+            feat = find_feature(doc, plane)
             _result(f"Select {plane}", feat is not None)
         except Exception:
             _result(f"Select {plane}", False)
@@ -2343,7 +2417,7 @@ def test_integration_suite(sw, template):
         return False
 
     try:
-        feat = doc.FeatureByName("Sketch1")
+        feat = find_feature(doc, "Sketch1")
         _result("Sketch1 discoverable after exit", feat is not None)
     except Exception as e:
         _result("Sketch1 discoverable after exit", False, str(e))
@@ -2351,7 +2425,7 @@ def test_integration_suite(sw, template):
 
     # Feature type check
     try:
-        feat = doc.FeatureByName("Sketch1")
+        feat = find_feature(doc, "Sketch1")
         type_name = feat.GetTypeName2 if feat else None
         _result("GetTypeName2 == 'ProfileFeature'", type_name == "ProfileFeature",
                 f"got '{type_name}'" if type_name else "feature not found")
@@ -2361,13 +2435,13 @@ def test_integration_suite(sw, template):
     # Sketch counter
     try:
         found = get_latest_sketch_name(doc)
-        _result(f"Latest sketch = '{found}'", found == "Sketch1")
+        _result(f"Latest sketch = '{found}'", found == N(doc, "Sketch1"))
     except Exception as e:
         _result("Feature enumeration", False, str(e))
 
     # Select by name
     try:
-        feat = select_sketch(doc, "Sketch1")
+        feat = select_sketch(doc, N(doc, "Sketch1"))
         _result("FeatureByName('Sketch1') found", feat is not None)
     except Exception as e:
         _result("FeatureByName('Sketch1') found", False, str(e))
@@ -2375,7 +2449,7 @@ def test_integration_suite(sw, template):
     # ClearSelection2 regression
     try:
         doc.ClearSelection2(True)
-        feat = doc.FeatureByName("Sketch1")
+        feat = find_feature(doc, "Sketch1")
         result = feat.Select2(False, 0) if feat else False
         _result("Select2 returned True", bool(result))
         doc.ClearSelection2(True)
@@ -2385,7 +2459,7 @@ def test_integration_suite(sw, template):
     # --- Extrusion ---
     subsection("Extrusion (add material)")
     try:
-        feat = extrude(doc, "Sketch1", 100.0, cut=False)
+        feat = extrude(doc, N(doc, "Sketch1"), 100.0, cut=False)
         _result("FeatureExtrusion2 (add material)", feat is not None)
         doc.ViewZoomtofit2()
     except Exception as e:
@@ -2394,7 +2468,7 @@ def test_integration_suite(sw, template):
 
     # Sketch still selectable after extrusion
     try:
-        feat = doc.FeatureByName("Sketch1")
+        feat = find_feature(doc, "Sketch1")
         _result("FeatureByName('Sketch1') post-extrusion", feat is not None)
     except Exception as e:
         _result("FeatureByName('Sketch1') post-extrusion", False, str(e))
@@ -2423,14 +2497,14 @@ def test_integration_suite(sw, template):
         return False
 
     try:
-        feat = doc.FeatureByName("Sketch2")
+        feat = find_feature(doc, "Sketch2")
         _result("Sketch2 exists after exit", feat is not None)
     except Exception as e:
         _result("Sketch2 exists after exit", False, str(e))
 
     # Feature type & selection checks for Sketch2
     try:
-        feat = doc.FeatureByName("Sketch2")
+        feat = find_feature(doc, "Sketch2")
         type_name = feat.GetTypeName2 if feat else None
         _result("Sketch2 GetTypeName2 == 'ProfileFeature'", type_name == "ProfileFeature")
     except Exception:
@@ -2438,18 +2512,18 @@ def test_integration_suite(sw, template):
 
     try:
         found = get_latest_sketch_name(doc)
-        _result(f"Latest sketch = '{found}'", found == "Sketch2")
+        _result(f"Latest sketch = '{found}'", found == N(doc, "Sketch2"))
     except Exception:
         pass
 
     try:
-        feat = select_sketch(doc, "Sketch2")
+        feat = select_sketch(doc, N(doc, "Sketch2"))
         _result("FeatureByName('Sketch2') found", feat is not None)
     except Exception as e:
         _result("FeatureByName('Sketch2') found", False, str(e))
 
     try:
-        feat = extrude(doc, "Sketch2", 50.0, cut=True, reverse=False)
+        feat = extrude(doc, N(doc, "Sketch2"), 50.0, cut=True, reverse=False)
         _result("FeatureCut4 (cut material)", feat is not None)
         doc.ViewZoomtofit2()
     except Exception as e:
@@ -2461,7 +2535,7 @@ def test_integration_suite(sw, template):
         create_sketch_on_face(doc, 30, 30, 0)
         doc.SketchManager.CreateCornerRectangle(0.01, 0.01, 0.0, 0.04, 0.04, 0.0)
         exit_sketch(doc)
-        feat = extrude(doc, "Sketch3", 30.0, cut=True, reverse=True)
+        feat = extrude(doc, N(doc, "Sketch3"), 30.0, cut=True, reverse=True)
         _result("Cut-extrusion reversed 30mm", feat is not None)
         doc.ViewZoomtofit2()
     except Exception as e:
@@ -2470,14 +2544,14 @@ def test_integration_suite(sw, template):
     # --- Multiple sequential cuts ---
     subsection("Multiple sequential cut-extrusions")
     for i in range(2):
-        sn = 4 + i
-        sketch_name = f"Sketch{sn}"
+        sketch_name = f"Sketch{4 + i}"  # label only; the real name may be localized
         cx_mm = 20 + i * 50
         cx_m = cx_mm / 1000.0
         try:
             create_sketch_on_face(doc, cx_mm, 50, 100)
             doc.SketchManager.CreateCircleByRadius(cx_m, 0.05, 0.1, 0.005)
             exit_sketch(doc)
+            sketch_name = get_latest_sketch_name(doc)
             feat = extrude(doc, sketch_name, 15.0, cut=True, reverse=False)
             _result(f"Cut #{i+1} using {sketch_name}", feat is not None)
         except Exception as e:
@@ -2522,7 +2596,12 @@ def test_integration_suite(sw, template):
     except Exception as e:
         _result("ViewZoomtofit2()", False, str(e))
 
-    return True
+    # Previously this always returned True, so failed sub-checks (✗) were
+    # printed but the suite still reported PASSED.
+    failed = FAIL - fail_at_start
+    if failed:
+        log(f"{failed} integration sub-check(s) failed", "ERROR")
+    return failed == 0
 
 
 # ===========================================================================
