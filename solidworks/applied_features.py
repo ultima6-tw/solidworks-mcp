@@ -640,25 +640,60 @@ class AppliedFeatureTools:
         sketch_feature = doc.FeatureByName(sketch_name)
         if not sketch_feature:
             raise Exception(f"Could not find sketch: {sketch_name}")
-        doc.ClearSelection2(True)
-        sketch_feature.Select2(False, 0)
+        # IFeatureManager.InsertRib(Is2Sided, ReverseThicknessDir, Thickness,
+        #   ReferenceEdgeIndex, ReverseMaterialDir, IsDrafted, DraftOutward,
+        #   DraftAngle, IsNormToSketch, IsDraftedFromWall) — 10 arguments per
+        # the SW2022 API help (the old 9-argument call raised "Parameter not
+        # optional"). Two-sided (symmetric) unless `reverse` asks for a
+        # one-sided rib. The material side depends on which way the open
+        # sketch faces the walls, so if the first attempt adds no material the
+        # direction is flipped once (like create_cut_extrusion's auto-flip).
+        # Probed on SW2022: InsertRib builds the rib but RETURNS None, so the
+        # new feature is found by diffing the tree and the volume is checked.
+        def _all_features():
+            out, f = [], doc.FirstFeature
+            while f is not None:
+                out.append(f)
+                f = f.GetNextFeature
+            return out
 
-        # InsertRib params: IsSolid, IsFlipped, Thickness, RibType, Direction, ...
-        # RibType: 0 = Linear, 1 = Natural
-        feature = doc.FeatureManager.InsertRib(
-            True,           # IsSolid
-            flip_side,      # IsFlipped
-            reverse,        # ReverseThicknessDir
-            thickness_m,    # Thickness
-            0,              # RibType: 0 = Linear
-            False,          # IsDrafted
-            0.0,            # DraftAngle
-            False,          # DraftOutward
-            False,          # IsNatural
-        )
+        def _try(material_flip):
+            names_before = {f.Name for f in _all_features()}
+            volume_before = _body_volume_mm3(doc)
+            doc.ClearSelection2(True)
+            sketch_feature.Select2(False, 0)
+            doc.FeatureManager.InsertRib(
+                not reverse,    # Is2Sided
+                reverse,        # ReverseThicknessDir (one-sided only)
+                thickness_m,    # Thickness
+                0,              # ReferenceEdgeIndex
+                material_flip,  # ReverseMaterialDir
+                False,          # IsDrafted
+                False,          # DraftOutward
+                0.0,            # DraftAngle
+                False,          # IsNormToSketch: False = parallel to the sketch
+                False,          # IsDraftedFromWall
+            )
+            new = [f for f in _all_features() if f.Name not in names_before]
+            volume_after = _body_volume_mm3(doc)
+            if new and volume_before is not None and volume_after is not None                     and volume_after - volume_before > 1e-6:
+                return new[-1]
+            # nothing added: remove whatever this attempt left in the tree
+            if new:
+                doc.ClearSelection2(True)
+                for i, f in enumerate(new):
+                    f.Select2(i > 0, 0)
+                # DeleteSelection2 never prompts (EditDelete can open a
+                # confirmation dialog); option 0 keeps the absorbed sketch so
+                # the retry can reuse it
+                doc.Extension.DeleteSelection2(0)
+            return None
+
+        feature = _try(flip_side) or _try(not flip_side)
 
         if not feature:
-            raise Exception("Failed to create rib. Ensure sketch profile intersects the body.")
+            raise Exception("Failed to create rib. The sketch must be an OPEN profile "
+                            "whose ends reach the existing walls.")
 
         feature_name = feature.Name
         doc.ViewZoomtofit2()
@@ -699,7 +734,9 @@ class AppliedFeatureTools:
         # Select sketch and face — both selections are load-bearing; a silent
         # miss used to fall through to InsertWrapFeature2 anyway
         sel.clear_selection(doc)
-        if not sel.select_sketch(doc, sketch_name, mark=0, append=False):
+        # Marks per the SW2022 API help for InsertWrapFeature2: target
+        # face(s) = 1, optional pull direction = 2, 2D sketch = 4.
+        if not sel.select_sketch(doc, sketch_name, mark=4, append=False):
             raise Exception(f"Could not select sketch '{sketch_name}' for wrap")
         if not sel.select_face(doc, face["x"], face["y"], face["z"], append=True, mark=1):
             raise Exception(
@@ -707,11 +744,15 @@ class AppliedFeatureTools:
                 f"{face['z']}) mm for wrap — use get_faces for exact coordinates"
             )
 
-        # InsertWrapFeature2 params: Type, Thickness, ReverseDir, ...
+        # InsertWrapFeature2(Type, Thickness, ReverseDir, Method, MeshFactor)
+        # — 5 arguments (the old 3-argument call raised "Parameter not
+        # optional"). Type is swWrapSketchType_e: Emboss 0, Engrave 1, Scribe 2.
         feature = doc.FeatureManager.InsertWrapFeature2(
-            wrap_type_int,  # Type: 0=Emboss, 1=Deboss, 2=Scribe
+            wrap_type_int,  # Type
             depth_m,        # Thickness in meters
             False,          # ReverseDir
+            0,              # Method: swWrapMethods_Analytical
+            10,             # MeshFactor (only used by the spline method)
         )
 
         if not feature:

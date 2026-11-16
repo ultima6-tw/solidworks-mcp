@@ -282,26 +282,46 @@ class CutFeatureTools:
         # MaintainTangency, Merge, IsThinBody,
         # Thickness1, Thickness2, ThinType,
         # UseFeatScope, UseAutoSelect, Close, GuideCurveInfluence
-        feature = doc.FeatureManager.InsertCutBlend2(
-            False,  # Closed
-            True,   # KeepTangency
-            True,   # ForceNonRational
-            1.0,    # TessToleranceFactor
-            0,      # StartMatchingType: 0 = None
-            0,      # EndMatchingType: 0 = None
-            1.0,    # StartTangentLength
-            1.0,    # EndTangentLength
-            False,  # MaintainTangency
-            True,   # Merge
-            False,  # IsThinBody
-            0.0,    # Thickness1
-            0.0,    # Thickness2
-            0,      # ThinType
-            True,   # UseFeatScope
-            True,   # UseAutoSelect
-            True,   # Close (feature scope)
-            0,      # GuideCurveInfluence
-        )
+        # IFeatureManager.InsertCutBlend2 (18 arguments) is what upstream
+        # used on SW2025, but it does not exist in SW2022's API, where the
+        # call fails with AttributeError. Fall back to InsertCutBlend
+        # (12 arguments, available since SW2009; profiles keep mark 1).
+        try:
+            cut_blend2 = doc.FeatureManager.InsertCutBlend2
+        except AttributeError:
+            cut_blend2 = None
+        if cut_blend2 is None:
+            feature = doc.FeatureManager.InsertCutBlend(
+                False,  # Closed
+                True,   # KeepTangency
+                True,   # ForceNonRational
+                1.0,    # TessToleranceFactor
+                0, 0,   # Start/EndMatchingType: none
+                False, 0.0, 0.0, 0,   # no thin feature
+                True,   # UseFeatScope
+                True,   # UseAutoSelect
+            )
+        else:
+            feature = cut_blend2(
+                False,  # Closed
+                True,   # KeepTangency
+                True,   # ForceNonRational
+                1.0,    # TessToleranceFactor
+                0,      # StartMatchingType: 0 = None
+                0,      # EndMatchingType: 0 = None
+                1.0,    # StartTangentLength
+                1.0,    # EndTangentLength
+                False,  # MaintainTangency
+                True,   # Merge
+                False,  # IsThinBody
+                0.0,    # Thickness1
+                0.0,    # Thickness2
+                0,      # ThinType
+                True,   # UseFeatScope
+                True,   # UseAutoSelect
+                True,   # Close (feature scope)
+                0,      # GuideCurveInfluence
+            )
 
         if not feature:
             raise Exception(

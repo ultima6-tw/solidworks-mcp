@@ -166,7 +166,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 
 ### Hole Features
 
-`hole_wizard` (FLAGGED: may trigger blocking dialog), `thread` (cosmetic thread on circular edge).
+`hole_wizard` (HOLE / COUNTERBORE / COUNTERSINK / STRAIGHT_TAP at one or more points on a planar face; sizes exactly as in the SOLIDWORKS table, e.g. `Ø10.0` for ISO drill sizes, `M6` for screws/taps), `thread` (cosmetic thread on circular edge).
 
 ### Reference Geometry
 
@@ -221,7 +221,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 
 **Dimensioning tools:** `sketch_dimension` adds a smart dimension to selected sketch entities (1 entity for length/radius, 2 for between-distance), with an optional `value` parameter to set the driving value (mm for linear dimensions, degrees for angular dimensions). The dimension type is auto-detected via `IDisplayDimension.Type2`; angular values are converted to radians internally, linear values to meters. `set_dimension_value` modifies an existing dimension by selecting it at its text position. `AddDimension2` triggers a blocking "Modify" dialog; this is handled by a background thread that auto-dismisses the dialog via `win32gui` (finds window class `#32770` title "Modify", sends Enter). `AddToDB=True` / `DisplayWhenAdded=False` reduce UI overhead.
 
-**Hole Wizard (flagged):** May trigger a blocking PropertyManager dialog similar to the dimensioning issue. Uses `AddToDB=True` / `DisplayWhenAdded=False` as mitigation. If it fails, use sketch circle + cut-extrude as a workaround.
+**Hole Wizard:** `IFeatureManager::HoleWizard5` takes 27 arguments on SW2022. Probed facts: the hole goes at the selection POINT (picked with `SelectByRay` along the inward normal, view-independent); several pre-selected points still give ONE hole, so the tool calls it once per position; for taps the cosmetic-thread type and thread end condition must be passed (despite the docs, -1 is not ignored there and the tap removes most of the part); a plain HOLE with THROUGH_ALL is rejected, so it is built as a blind hole deeper than the part.
 
 **SolidWorks COM:** Uses `win32com.client` via `pywin32`. `connection.py` attempts to connect to an already-running SolidWorks instance first, then launches a new one. Template paths are discovered by glob (`C:\ProgramData\SOLIDWORKS\SOLIDWORKS *\templates\Part.prtdot` / `Assembly.asmdot`), preferring the template matching the running SW version (multiple versions' templates can coexist).
 
@@ -241,6 +241,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 - `FeatureFillet3`, `InsertFeatureChamfer`, `InsertFeatureShell`, `IFeatureManager::InsertMultiFaceDraft` (neutral plane mark 1, faces mark 2; `InsertFeatureDraft` does not exist) - see `applied_features.py`
 - `FeatureLinearPattern4` (20 params for SW2025 — 11/12-param forms raise 'Parameter not optional'), `FeatureCircularPattern4`, `InsertMirrorFeature2` - see `patterns.py`
 - `InsertRefPlane`, `IModelDoc2::InsertAxis2` (returns bool; `InsertRefAxis` does not exist), `InsertReferencePoint` (returns an ARRAY; swRefPointType_e AlongCurve=2 / CenterEdge=3 / FaceCenter=4 / SketchPoint=7; percent is 0-100; no coordinate type — COORDINATES goes through a 3D-sketch point), `InsertCoordinateSystem` - see `reference_geometry.py`
+- `IFeatureManager::InsertRib` (10 args; returns None even on success), `InsertWrapFeature2` (5 args; sketch mark 4, faces mark 1), `InsertCutBlend` (12 args — `InsertCutBlend2` exists only on newer versions, used when present), `HoleWizard5` (27 args) - see `applied_features.py` / `cut_features.py` / `hole_features.py`
 - `IFeatureManager::InsertCosmeticThread2(Type, Depth, Length, Note)` — 2nd arg becomes the minor Diameter, 3rd the BlindDepth (read back from the definition) - see `hole_features.py`
 - `AddComponent5`, `AddMate5` (15 params), `GetComponents`, `IComponent2::Transform2` (getter only), MateGroup sub-feature traversal - see `assembly.py`
 - `IModelDocExtension::SaveAs`, `OpenDoc6`, `ActivateDoc3`, `QuitDoc`, `GetDocuments` - see `document_manager.py` / `connection.py`

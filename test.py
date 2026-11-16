@@ -2441,6 +2441,302 @@ def test_mcp_boundary(sw, template):
         return False
 
 
+# ---------------------------------------------------------------------------
+# (d) feature tools that had no test at all. Every test checks geometry
+# (volume against an analytic value), not just the tool's success message.
+# ---------------------------------------------------------------------------
+
+def _frame_mapper(sketch_result):
+    """model point (mm) -> (x, y) in the sketch, using create_sketch's sketchFrame."""
+    fr = _mcp_json(sketch_result)["sketchFrame"]
+    o, ax, ay = fr["originModel_mm"], fr["xAxisModel"], fr["yAxisModel"]
+    return lambda p: (sum((p[k] - o[k]) * ax[k] for k in range(3)),
+                      sum((p[k] - o[k]) * ay[k] for k in range(3)))
+
+
+def _volume(server):
+    return _mcp_json(server._route_tool("solidworks_get_mass_properties", {}))["volume_mm3"]
+
+
+def _expect_volume(server, label, want, rel=1e-6, abs_tol=0.5):
+    vol = _volume(server)
+    if abs(vol - want) > max(abs_tol, want * rel):
+        log(f"{label}: volume {vol:.2f} != expected {want:.2f}", "ERROR")
+        return False
+    log(f"{label}: volume {vol:.2f} OK", "SUCCESS")
+    return True
+
+
+def _call(server, tool, args=None):
+    """Route a tool call; tool errors come back as a '❌ ...' string."""
+    try:
+        return server._route_tool(tool, args or {})
+    except Exception as e:
+        return f"❌ {e}"
+
+
+def _box(server, w, h, d, cx=0, cy=0):
+    return [server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_rectangle", {"width": w, "height": h, "centerX": cx, "centerY": cy}),
+            server._route_tool("solidworks_create_extrusion", {"depth": d})]
+
+
+@register_test("mcp_rib", "MCP Rib", "MCP Tools",
+               "Rib between the two legs of an L-bracket; check the added triangle volume", order=25)
+def test_mcp_rib(sw, template):
+    # flipSide=True makes the first attempt point away from the walls, so it
+    # exercises the delete-and-retry path as well
+    for flip in (False, True):
+        if not _rib_case(flip):
+            return False
+    return True
+
+
+def _rib_case(flip):
+    try:
+        server = create_mcp_server()
+        R = server._route_tool
+        # L-bracket: base 80x10 (y 0..10) + wall 10x50 (x 0..10, y 10..60), 40 deep
+        results = _box(server, 80, 10, 40, cx=40, cy=5)
+        results += [R("solidworks_create_sketch", {"plane": "Front"}),
+                    R("solidworks_sketch_rectangle", {"width": 10, "height": 50, "centerX": 5, "centerY": 35}),
+                    R("solidworks_create_extrusion", {"depth": 40})]
+        pl = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Front", "offset": 20}))["id"]
+        sk = R("solidworks_create_sketch", {"plane": pl})
+        results.append(sk)
+        if not mcp_check_results(results):
+            return False
+        m = _frame_mapper(sk)
+        (x1, y1), (x2, y2) = m((10, 50, 20)), m((70, 10, 20))
+        R("solidworks_sketch_line", {"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+        r = _call(server, "solidworks_rib", {"thickness": 4, "flipSide": flip})
+        if not _mcp_ok(r):
+            log(f"rib (flipSide={flip}) failed: {r}", "ERROR")
+            return False
+        # triangle with legs 40 (y) and 60 (x), 4 thick
+        ok = _expect_volume(server, f"rib flipSide={flip}", 80 * 10 * 40 + 10 * 50 * 40 + 0.5 * 40 * 60 * 4)
+        ribs = [n for n in _mcp_json(server._route_tool("solidworks_get_feature_tree", {}))["tree"]
+                if n.get("type") == "Rib"]
+        if len(ribs) != 1:
+            log(f"expected exactly one Rib feature, tree has {len(ribs)}", "ERROR")
+            return False
+        server._route_tool("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_rib FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_wrap", "MCP Wrap (emboss + deboss)", "MCP Tools",
+               "Wrap a 10x10 square onto a r20 cylinder; check the emboss/deboss volume", order=26)
+def test_mcp_wrap(sw, template):
+    try:
+        Rc, w, h, d = 20, 10, 10, 2
+        theta = w / Rc
+        expected = {"EMBOSS": theta / 2 * ((Rc + d) ** 2 - Rc ** 2) * h,
+                    "DEBOSS": -theta / 2 * (Rc ** 2 - (Rc - d) ** 2) * h}
+        base = math.pi * Rc ** 2 * 40
+        for kind, delta in expected.items():
+            server = create_mcp_server()
+            R = server._route_tool
+            results = [R("solidworks_new_part", {}),
+                       R("solidworks_create_sketch", {"plane": "Front"}),
+                       R("solidworks_sketch_circle", {"radius": Rc, "centerX": 0, "centerY": 0}),
+                       R("solidworks_create_extrusion", {"depth": 40})]
+            pl = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Right", "offset": Rc}))["id"]
+            sk = R("solidworks_create_sketch", {"plane": pl})
+            results.append(sk)
+            if not mcp_check_results(results):
+                return False
+            cx, cy = _frame_mapper(sk)((Rc, 0, 20))
+            R("solidworks_sketch_rectangle", {"width": w, "height": h, "centerX": cx, "centerY": cy})
+            r = _call(server, "solidworks_wrap", {"type": kind, "face": {"x": Rc, "y": 0, "z": 20}, "depth": d})
+            if not _mcp_ok(r):
+                log(f"wrap {kind} failed: {r}", "ERROR")
+                return False
+            if not _expect_volume(server, f"wrap {kind}", base + delta, rel=1e-3):
+                return False
+            R("solidworks_close_document", {})
+        return True
+    except Exception as e:
+        log(f"mcp_wrap FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+def _box_and_cylinder(server):
+    """40x40x40 box at the origin + separate r10 cylinder centred on its +X face."""
+    R = server._route_tool
+    return _box(server, 40, 40, 40) + [
+        R("solidworks_create_sketch", {"plane": "Front"}),
+        R("solidworks_sketch_circle", {"radius": 10, "centerX": 20, "centerY": 0}),
+        R("solidworks_create_extrusion", {"depth": 40, "merge": False})]
+
+
+@register_test("mcp_combine_bodies", "MCP Combine Bodies (ADD/SUBTRACT/COMMON)", "MCP Tools",
+               "Box + overlapping cylinder as separate bodies; check each boolean's volume", order=27)
+def test_mcp_combine_bodies(sw, template):
+    try:
+        box, cyl = 40 ** 3, math.pi * 10 ** 2 * 40
+        half = cyl / 2
+        cases = {"ADD": [box + half], "COMMON": [half],
+                 "SUBTRACT": [box - half, cyl - half]}   # main body may be either
+        for op, wants in cases.items():
+            server = create_mcp_server()
+            if not mcp_check_results(_box_and_cylinder(server)):
+                return False
+            r = _call(server, "solidworks_combine_bodies", {"operation": op})
+            if not _mcp_ok(r):
+                log(f"combine {op} failed: {r}", "ERROR")
+                return False
+            vol = _volume(server)
+            if not any(abs(vol - w) < 0.5 for w in wants):
+                log(f"combine {op}: volume {vol:.2f} not in {[round(w, 2) for w in wants]}", "ERROR")
+                return False
+            log(f"combine {op}: volume {vol:.2f} OK", "SUCCESS")
+            server._route_tool("solidworks_close_document", {})
+        return True
+    except Exception as e:
+        log(f"mcp_combine_bodies FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_intersect", "MCP Intersect", "MCP Tools",
+               "Box + overlapping cylinder as separate bodies; intersect keeps the half cylinder", order=28)
+def test_mcp_intersect(sw, template):
+    try:
+        server = create_mcp_server()
+        if not mcp_check_results(_box_and_cylinder(server)):
+            return False
+        r = _call(server, "solidworks_intersect", {})
+        if not _mcp_ok(r):
+            log(f"intersect failed: {r}", "ERROR")
+            return False
+        return _expect_volume(server, "intersect", math.pi * 10 ** 2 * 40 / 2)
+    except Exception as e:
+        log(f"mcp_intersect FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_cut_sweep", "MCP Cut Sweep", "MCP Tools",
+               "Sweep a r5 circle along a straight 40mm path through a 40mm cube", order=29)
+def test_mcp_cut_sweep(sw, template):
+    try:
+        server = create_mcp_server()
+        R = server._route_tool
+        results = _box(server, 40, 40, 40)
+        prof = R("solidworks_create_sketch", {"plane": "Front"})
+        results += [prof, R("solidworks_sketch_circle", {"radius": 5, "centerX": 0, "centerY": 0}),
+                    R("solidworks_exit_sketch", {})]
+        path = R("solidworks_create_sketch", {"plane": "Top"})
+        results.append(path)
+        if not mcp_check_results(results):
+            return False
+        m = _frame_mapper(path)
+        (x1, y1), (x2, y2) = m((0, 0, 0)), m((0, 0, 40))
+        R("solidworks_sketch_line", {"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+        R("solidworks_exit_sketch", {})
+        r = _call(server, "solidworks_cut_sweep", {"profileSketch": _mcp_json(prof)["id"],
+                                                   "pathSketch": _mcp_json(path)["id"]})
+        if not _mcp_ok(r):
+            log(f"cut_sweep failed: {r}", "ERROR")
+            return False
+        return _expect_volume(server, "cut sweep", 40 ** 3 - math.pi * 25 * 40)
+    except Exception as e:
+        log(f"mcp_cut_sweep FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_cut_loft", "MCP Cut Loft", "MCP Tools",
+               "Loft-cut a r15 -> r5 frustum through a 40mm cube", order=30)
+def test_mcp_cut_loft(sw, template):
+    try:
+        server = create_mcp_server()
+        R = server._route_tool
+        results = _box(server, 40, 40, 40)
+        s1 = R("solidworks_create_sketch", {"plane": "Front"})
+        results += [s1, R("solidworks_sketch_circle", {"radius": 15, "centerX": 0, "centerY": 0}),
+                    R("solidworks_exit_sketch", {})]
+        pl = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Front", "offset": 40}))["id"]
+        s2 = R("solidworks_create_sketch", {"plane": pl})
+        results += [s2, R("solidworks_sketch_circle", {"radius": 5, "centerX": 0, "centerY": 0}),
+                    R("solidworks_exit_sketch", {})]
+        if not mcp_check_results(results):
+            return False
+        r = _call(server, "solidworks_cut_loft", {"profileSketches": [_mcp_json(s1)["id"], _mcp_json(s2)["id"]]})
+        if not _mcp_ok(r):
+            log(f"cut_loft failed: {r}", "ERROR")
+            return False
+        frustum = math.pi * 40 / 3 * (15 ** 2 + 15 * 5 + 5 ** 2)
+        return _expect_volume(server, "cut loft", 40 ** 3 - frustum, rel=1e-4)
+    except Exception as e:
+        log(f"mcp_cut_loft FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_hole_wizard", "MCP Hole Wizard", "MCP Tools",
+               "ISO drilled (blind, through, 2 positions), counterbore, countersink and tapped holes; volumes checked", order=31)
+def test_mcp_hole_wizard(sw, template):
+    """hole_wizard used wrong enums and an 18-argument HoleWizard5 (27 on
+    SW2022). Each case checks the removed volume against an analytic value."""
+    from solidworks.com_utils import com_prop
+    tip = lambda r: math.pi * r * r * (r / math.tan(math.radians(59))) / 3   # 118 deg drill point
+    cyl = lambda r, h: math.pi * r * r * h
+
+    def run(label, args, expected=None, check_def=None):
+        server = create_mcp_server()
+        if not mcp_check_results(_box(server, 40, 40, 20)):
+            return False
+        r = _call(server, "solidworks_hole_wizard", args)
+        if not _mcp_ok(r):
+            log(f"{label}: {r}", "ERROR")
+            return False
+        removed = _mcp_json(r)["removed_mm3"]
+        ids = _mcp_json(r)["id"]
+        first = (ids[0] if isinstance(ids, list) else ids).split(":", 1)[-1]
+        fd = com_prop(sw.ActiveDoc.FeatureByName(first), "GetDefinition")
+        if check_def is not None:
+            expected = check_def(fd)
+        server._route_tool("solidworks_close_document", {})
+        if abs(removed - expected) > 0.05:
+            log(f"{label}: removed {removed:.2f} != expected {expected:.2f}", "ERROR")
+            return False
+        log(f"{label}: removed {removed:.2f} OK", "SUCCESS")
+        return True
+
+    top = {"x": 0, "y": 0, "z": 20}
+    hole = {"type": "HOLE", "size": "Ø10.0"}
+
+    def countersink(fd):
+        D, a = fd.CounterSinkDiameter * 1000, fd.CounterSinkAngle
+        d = fd.ThruHoleDiameter * 1000 if fd.ThruHoleDiameter > 0 else fd.HoleDiameter * 1000
+        h = (D - d) / 2 / math.tan(a / 2)
+        log(f"countersink definition: csink Ø{D:g} x {math.degrees(a):g}°, through Ø{d:g}")
+        return math.pi * h / 3 * ((D / 2) ** 2 + D * d / 4 + (d / 2) ** 2) + cyl(d / 2, 20 - h)
+
+    return all([
+        run("HOLE Ø10 blind 10", dict(hole, face=top, depth=10), cyl(5, 10) + tip(5)),
+        # plain HOLE + THROUGH_ALL is built as a blind hole that exits the part
+        run("HOLE Ø10 through all", dict(hole, face={"x": 5, "y": 0, "z": 20}, endCondition="THROUGH_ALL"), cyl(5, 20)),
+        run("HOLE Ø10 at 2 positions", dict(hole, face=top, depth=10,
+            positions=[{"x": 10, "y": 10, "z": 20}, {"x": -10, "y": -10, "z": 20}]), 2 * (cyl(5, 10) + tip(5))),
+        # ISO M6 socket head cap screw: counterbore Ø11 x 6.4, clearance Ø6.6
+        run("COUNTERBORE M6 through", {"type": "COUNTERBORE", "size": "M6", "face": top,
+            "endCondition": "THROUGH_ALL"}, cyl(5.5, 6.4) + cyl(3.3, 20 - 6.4)),
+        run("COUNTERSINK M6 through", {"type": "COUNTERSINK", "size": "M6", "face": top,
+            "endCondition": "THROUGH_ALL"}, check_def=countersink),
+        # M6 tap: thread modelled at the Ø6 major diameter for 12, then Ø5 drill to 15 + tip
+        run("STRAIGHT_TAP M6 thread 12, drill 15", {"type": "STRAIGHT_TAP", "size": "M6", "face": top,
+            "depth": 15, "threadDepth": 12}, cyl(3, 12) + cyl(2.5, 3) + tip(2.5)),
+    ])
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
