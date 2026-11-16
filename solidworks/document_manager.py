@@ -602,6 +602,13 @@ class DocumentManagerTools:
 
         before = self._feature_tree(doc)
         recognized = fw.RecognizeFeatureAutomatic(mask)
+        if not recognized:
+            # Measured on SW2022: the FIRST call after FeatureWorks is loaded
+            # for the first time in a SOLIDWORKS session returns 0 (and
+            # CreateFeatures then does nothing); an immediate second call
+            # recognizes normally. A part that really has nothing to recognize
+            # just returns 0 twice.
+            recognized = fw.RecognizeFeatureAutomatic(mask)
         create_opts = FW_ALLOW_FAIL | (FW_ADD_CONSTRAINTS if add_constraints else 0)
         created = fw.CreateFeatures(create_opts)
 

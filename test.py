@@ -2912,6 +2912,225 @@ def test_mcp_configurations(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+_HOLE_REMOVED = math.pi * 25 * 10 + math.pi * 25 * (5 / math.tan(math.radians(59))) / 3   # ISO Ø10.0 blind 10
+
+
+def _box_with_hole(server):
+    """40x30x20 box + one ISO Ø10.0 x 10 drilled hole on the top face.
+    Returns (extrude_name, hole_name) or None."""
+    if not mcp_check_results(_box(server, 40, 30, 20)):
+        return None
+    r = _call(server, "solidworks_hole_wizard", {"type": "HOLE", "size": "Ø10.0", "depth": 10,
+                                                 "face": {"x": 0, "y": 0, "z": 20}})
+    if not _mcp_ok(r):
+        log(f"hole_wizard: {r}", "ERROR")
+        return None
+    hole = _mcp_json(r)["id"].split(":", 1)[-1]
+    top = [n["name"] for n in _tree(server) if not n.get("isFolder")]
+    others = [n for n in top if n != hole]
+    return others[-1], hole
+
+
+def _tree(server):
+    return _mcp_json(server._route_tool("solidworks_get_feature_tree", {}))["tree"]
+
+
+def _folder(server, name):
+    for n in _tree(server):
+        if n.get("isFolder") and n["name"] == name:
+            return [c["name"] for c in n.get("children", [])]
+    return None
+
+
+@register_test("mcp_feature_tree_ops", "MCP Feature Tree Ops", "MCP Tools",
+               "rename, suppress/unsuppress, empty folder + move_to_folder (empty and append paths), folder around a feature, delete; tree and volume checked", order=38)
+def test_mcp_feature_tree_ops(sw, template):
+    server = create_mcp_server()
+    full, holed = 40 * 30 * 20, 40 * 30 * 20 - _HOLE_REMOVED
+    try:
+        names = _box_with_hole(server)
+        if not names:
+            return False
+        extrude, hole = names
+        log(f"features: extrude={extrude!r} hole={hole!r}")
+
+        # rename (+ the two documented refusals)
+        if not _mcp_ok(_call(server, "solidworks_rename_feature", {"name": extrude, "newName": "Base Block"})):
+            return False
+        if "Base Block" not in [n["name"] for n in _tree(server)]:
+            log("renamed feature not in the tree", "ERROR")
+            return False
+        for bad in ("Base Block", "a@b"):
+            if _mcp_ok(_call(server, "solidworks_rename_feature", {"name": hole, "newName": bad})):
+                log(f"rename to {bad!r} should have been refused", "ERROR")
+                return False
+        log("rename OK; duplicate name and '@' refused", "SUCCESS")
+
+        # suppress / unsuppress
+        _call(server, "solidworks_suppress_feature", {"feature": hole, "suppress": True})
+        if not _expect_volume(server, "hole suppressed", full):
+            return False
+        _call(server, "solidworks_suppress_feature", {"feature": hole, "suppress": False})
+        if not _expect_volume(server, "hole unsuppressed", holed):
+            return False
+
+        # empty folder; move the block in (empty-folder path), then the hole
+        # (appended after the block, keeping the build order)
+        r = _call(server, "solidworks_create_feature_folder", {"folderName": "Stock"})
+        if not _mcp_ok(r) or _folder(server, "Stock") != []:
+            log(f"empty folder: {r} / {_folder(server, 'Stock')}", "ERROR")
+            return False
+        for feats, want in ((["Base Block"], ["Base Block"]), ([hole], ["Base Block", hole])):
+            r = _call(server, "solidworks_move_to_folder", {"folderName": "Stock", "features": feats})
+            if not _mcp_ok(r) or _folder(server, "Stock") != want:
+                log(f"move_to_folder {feats}: {r} / {_folder(server, 'Stock')}", "ERROR")
+                return False
+        # a second hole, wrapped in a new folder by create_feature_folder
+        r = _call(server, "solidworks_hole_wizard", {"type": "HOLE", "size": "Ø10.0", "depth": 10,
+                                                     "face": {"x": 12, "y": 7, "z": 20}})
+        hole2 = _mcp_json(r)["id"].split(":", 1)[-1] if _mcp_ok(r) else None
+        r = _call(server, "solidworks_create_feature_folder", {"folderName": "Holes", "features": [hole2]})
+        if not hole2 or not _mcp_ok(r) or _folder(server, "Holes") != [hole2]:
+            log(f"folder with features: {r} / {_folder(server, 'Holes')}", "ERROR")
+            return False
+        top = [n["name"] for n in _tree(server)]
+        if top != ["Stock", "Holes"]:
+            log(f"top level should be exactly the two folders: {top}", "ERROR")
+            return False
+        log(f"folders: Stock={_folder(server, 'Stock')} Holes={_folder(server, 'Holes')}", "SUCCESS")
+        if not _expect_volume(server, "after folder moves (2 holes)", full - 2 * _HOLE_REMOVED):
+            return False
+
+        # delete; a name deleted through the tool is no longer known
+        if not _mcp_ok(_call(server, "solidworks_delete_feature", {"feature": hole})):
+            return False
+        if not _expect_volume(server, "first hole deleted", holed):
+            return False
+        if _mcp_ok(_call(server, "solidworks_delete_feature", {"feature": hole})):
+            log("deleting the same feature twice should report it is not found", "ERROR")
+            return False
+        # deleting the block takes its child (the second hole) with it; deleting
+        # that tracked hole afterwards succeeds as alreadyDeleted
+        if not _mcp_ok(_call(server, "solidworks_delete_feature", {"feature": "Base Block"})):
+            return False
+        again = _call(server, "solidworks_delete_feature", {"feature": hole2})
+        if not _mcp_ok(again) or not _mcp_json(again).get("alreadyDeleted"):
+            log(f"delete of a feature removed with its parent: {again}", "ERROR")
+            return False
+        log("delete OK; repeat delete refused; child removed with its parent reported alreadyDeleted", "SUCCESS")
+        return True
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
+@register_test("mcp_open_import", "MCP Open / Import / Recognize", "MCP Tools",
+               "Save a holed box as SLDPRT and STEP; open_document, import_file (+ via open_document), recognize_features; volumes checked", order=39)
+def test_mcp_open_import(sw, template):
+    holed = 40 * 30 * 20 - _HOLE_REMOVED
+    d = tempfile.mkdtemp(prefix="swmcp_doc_tests_")   # left in %TEMP%; never deleted by the test
+    server = create_mcp_server()
+    try:
+        if not _box_with_hole(server):
+            return False
+        part = _mcp_json(server._route_tool("solidworks_save_document", {"path": os.path.join(d, "holed_box")}))["path"]
+        step = _mcp_json(server._route_tool("solidworks_save_document", {"path": os.path.join(d, "holed_box.STEP")}))["path"]
+        log(f"saved {part} and {step}")
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+    def check(label, tool, args, extra=None):
+        server = create_mcp_server()
+        try:
+            r = _call(server, tool, args)
+            if not _mcp_ok(r):
+                log(f"{label}: {r}", "ERROR")
+                return False
+            ok = _expect_volume(server, label, holed, rel=1e-6)
+            return ok and (extra(server) if extra else True)
+        finally:
+            _call(server, "solidworks_close_document", {})
+
+    def has_hole_feature(server):
+        types = [n["type"] for n in _tree(server)]
+        log(f"opened part tree types: {types}")
+        return "HoleWzd" in types
+
+    def recognize(server):
+        r = _call(server, "solidworks_recognize_features", {})
+        if not _mcp_ok(r):
+            log(f"recognize_features: {r}", "ERROR")
+            return False
+        n = _mcp_json(r).get("featuresRecognized", 0)
+        types = [x["type"] for x in _tree(server)]
+        log(f"recognized {n} feature(s); tree types now {types}")
+        return n >= 2 and _expect_volume(server, "after recognition", holed, rel=1e-6)
+
+    return all([
+        check("open_document .SLDPRT", "solidworks_open_document", {"path": part}, has_hole_feature),
+        check("import_file .STEP", "solidworks_import_file", {"path": step}),
+        check("open_document .STEP (routed to import)", "solidworks_open_document", {"path": step}),
+        check("import_file + recognize_features", "solidworks_import_file", {"path": step}, recognize),
+    ])
+
+
+def _png_box_aspect(path):
+    """Width/height of the part in a screenshot, measured on its black
+    silhouette edges (the SOLIDWORKS background is a gradient, so comparing
+    against a background colour also picks up the blue-grey shading)."""
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    w, h = im.size
+    px = im.load()
+    xs, ys = [], []
+    for y in range(h):
+        for x in range(w):
+            if sum(px[x, y]) < 120:          # near-black edge pixels
+                xs.append(x); ys.append(y)
+    if not xs:
+        return None
+    return (max(xs) - min(xs)) / max(1, (max(ys) - min(ys)))
+
+
+@register_test("mcp_views", "MCP Views (capture_views / look_at_model)", "MCP Tools",
+               "PNG per view; the drawn box's aspect ratio matches the view (front 40:30, top 40:20); look_at_model labels 6 faces", order=40)
+def test_mcp_views(sw, template):
+    server = create_mcp_server()
+    d = tempfile.mkdtemp(prefix="swmcp_view_tests_")   # left in %TEMP%; never deleted by the test
+    try:
+        if not mcp_check_results(_box(server, 40, 30, 20)):
+            return False
+        r = _call(server, "solidworks_capture_views", {"views": ["ISOMETRIC", "FRONT", "TOP"], "outputDir": d})
+        if not _mcp_ok(r):
+            log(f"capture_views: {r}", "ERROR")
+            return False
+        files = _mcp_json(r)["files"]
+        if len(files) != 3 or not all(os.path.getsize(f) > 1000 for f in files):
+            log(f"capture_views files: {files}", "ERROR")
+            return False
+        ok = True
+        for f, want, label in ((files[1], 40 / 30, "FRONT"), (files[2], 40 / 20, "TOP")):
+            a = _png_box_aspect(f)
+            good = a is not None and abs(a - want) / want < 0.08
+            log(f"{label}: drawn aspect {a if a is None else round(a, 3)} (expected {want:.3f})", "SUCCESS" if good else "ERROR")
+            ok = ok and good
+        if not ok:
+            return False
+
+        r = _call(server, "solidworks_look_at_model", {"view": "front"})
+        if not r.startswith("IMAGE_FILE:"):
+            log(f"look_at_model: {r[:300]}", "ERROR")
+            return False
+        png, payload = r[len("IMAGE_FILE:"):].split("\n", 1)
+        info = _mcp_json(payload)
+        a = _png_box_aspect(png)
+        good = info.get("labeled") and len(info.get("faces", [])) == 6 and a is not None
+        log(f"look_at_model: {len(info.get('faces', []))} labelled faces, labeled={info.get('labeled')}, aspect {a}",
+            "SUCCESS" if good else "ERROR")
+        return bool(good)
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

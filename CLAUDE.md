@@ -189,6 +189,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 - Recovered features are genuinely drivable: `set_parameter("D1@Fillet1", …)` rebuilds and moves the volume as expected.
 - **Recognized sketches are constrained but NOT dimensioned** — there are no `D<i>@Sketch<n>` dimensions, so cut/boss *profiles* cannot be driven numerically. Change those by editing sketch geometry or by direct face editing.
 - Cost: ~6s on a simple part, ~2.5 min on a 435-face one. Volume is preserved to ~0.001%.
+- **First call after FeatureWorks loads returns 0** (SW2022, measured): when the add-in is loaded for the first time in a SOLIDWORKS session (`LoadAddIn` → 0), the first `RecognizeFeatureAutomatic` returns 0 and `CreateFeatures` does nothing; an immediate second call recognizes normally. `recognize_features` therefore calls it a second time when the first returns 0.
 
 ### Assembly Tools
 
@@ -200,18 +201,19 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 
 ### Feature Tree Tools
 
-`get_feature_tree` (the design timeline as structured JSON — build order, type, tracked ID, suppression, folder nesting, and absorbed sub-features such as the sketch consumed by an extrude; prefer it over `list_features`, which returns unstructured text), `rename_feature` (`IFeature.Name` is a settable property; the tracker is re-keyed in the same call so `feat:Boss-Extrude1` becomes `feat:Base Plate` and sketch-entity IDs / consuming features follow), `create_feature_folder`, `move_to_folder`.
+`get_feature_tree` (the design timeline as structured JSON — build order, type, tracked ID, suppression, folder nesting, and absorbed sub-features such as the sketch consumed by an extrude; prefer it over `list_features`, which returns unstructured text), `rename_feature` (`IFeature.Name` is a settable property; the tracker is re-keyed in the same call so `feat:Boss-Extrude1` becomes `feat:Base Plate` and sketch-entity IDs / consuming features follow), `create_feature_folder`, `move_to_folder` (via `ReorderFeature`, see below).
 
 **Naming is encouraged, not just possible.** Auto-generated names (`Boss-Extrude7`, `Sketch12`) make a model unreadable to a later agent and to the human who opens it. `rename_feature`'s description tells agents to name each feature as they create it, and `get_feature_tree` returns a `hint` listing features that still carry default names.
 
 **Tree traversal gotchas:** `IModelDoc2::FirstFeature` + `GetNextFeature` walks the timeline, but absorbed sketches and foldered features **also appear in that linear walk**, so they must be de-duplicated against what was already emitted as a sub-feature or folder child. Descend into absorbed children with `GetFirstSubFeature`/**`GetNextSubFeature`** — calling `GetNextFeature` on a sub-feature rejoins the top-level chain and the traversal never terminates (this hung a test run). Folder contents come from `IFeature::GetSpecificFeature2()` → `IFeatureFolder::GetFeatures()`.
 
-**Folders — what works and what does not (measured on SW2025 Student Edition):**
+**Folders — what works and what does not:**
 
-- ✅ `InsertFeatureTreeFolder2(2)` = **Containing** wraps the current selection. This is the only reliable way to group features, so **decide a folder's membership when you create it** and pass the full `features` list.
+- ✅ `InsertFeatureTreeFolder2(2)` = **Containing** wraps the current selection — the simplest way to group features: pass the full `features` list to `create_feature_folder`.
 - ✅ `InsertFeatureTreeFolder2(1)` = **EmptyBefore** creates an empty folder, but it is inserted *above the current selection* and returns `None` if nothing is selected — the tool anchors it on the last feature automatically.
-- ❌ `MoveToFolder(folderName, itemName, moveAfterFolder)` returns **False** in every case tested: into an empty folder, into a populated folder, and folder-into-folder, with either `moveAfterFolder` value. `move_to_folder` is kept so the failure is explicit rather than silent.
-- ❌ **Folders cannot be nested.** `MoveToFolder` refuses a folder child and `IFeatureManager::InsertSubFolder` resolves to a property returning `None`. Use several well-named top-level folders instead of a hierarchy.
+- ✅ **Moving features into an existing folder** uses `IModelDocExtension::ReorderFeature(feature, target, swMoveLocation_e)` (SW2022 API help; probed on SW2022): `swMoveToFolder` (5) with the folder name puts the item at the **top** of the folder, so a feature that depends on the folder's contents (a hole on a foldered block) is refused; `swMoveAfter` (3) after the folder's last member appends it at the **end**, keeping the build order. `move_to_folder` tries append first, then top, and verifies by reading the folder back.
+- ❌ `IFeatureManager::MoveToFolder` is **not** for design-tree folders — the API help says it is specific to the Solid Bodies folder. It returned False in every case tested (SW2025 and SW2022); do not use it for feature folders.
+- ⚠ Nesting: `ReorderFeature(folder, parentFolder, swMoveToFolder)` DID nest one folder in another on SW2022 (probed), but `create_feature_folder`'s `parentFolder` still uses the old `MoveToFolder` call and reports nesting as unsupported — not yet switched over. `get_feature_tree` lists a nested folder only inside its parent.
 
 **Folder end tags:** every folder adds a closing pseudo-feature named `<Folder>___EndTag___` to the linear walk. It is not a design step — filter it out of any traversal (`get_feature_tree` does).
 

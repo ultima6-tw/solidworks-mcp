@@ -161,14 +161,12 @@ class FeatureTreeTools:
                 name="solidworks_move_to_folder",
                 description=(
                     "Move existing features into an existing design-tree folder. "
-                    "KNOWN LIMITATION: IFeatureManager::MoveToFolder is rejected by "
-                    "SolidWorks 2025 in testing — into empty folders, into populated "
-                    "folders, and for nesting one folder in another, with either "
-                    "MoveAfterFolder value. Prefer create_feature_folder with the "
-                    "complete `features` list, which does work; that means deciding "
-                    "a folder's membership when you create it. This tool is kept so "
-                    "the failure is explicit, and because other SolidWorks builds "
-                    "may accept the call."
+                    "A feature is appended at the END of the folder when that keeps "
+                    "the build order (e.g. a hole after the block it cuts); otherwise "
+                    "it is placed at the top of the folder. SolidWorks refuses a move "
+                    "that would put a feature ahead of a feature it depends on — "
+                    "those come back in `failed`. Membership is verified by reading "
+                    "the folder back."
                 ),
                 inputSchema={
                     "type": "object",
@@ -419,14 +417,19 @@ class FeatureTreeTools:
         # as another feature's sub-feature must not be repeated at top level.
         nested = set()
         pending = []
+
+        def mark_nested(node):
+            # every descendant — a folder moved into another folder also shows
+            # up in the linear walk, and so does everything inside it
+            for child in node.get("children", []) + node.get("subFeatures", []):
+                nested.add(child["name"])
+                mark_nested(child)
+
         while feature is not None and index < 2000:
             node = self._describe(feature, index, opts)
             if node:
                 pending.append(node)
-                for child in node.get("children", []):
-                    nested.add(child["name"])
-                for child in node.get("subFeatures", []):
-                    nested.add(child["name"])
+                mark_nested(node)
             index += 1
             try:
                 feature = com_prop(feature, "GetNextFeature")
@@ -435,7 +438,7 @@ class FeatureTreeTools:
 
         order = 0
         for node in pending:
-            if node.get("isFolder") or node["name"] not in nested:
+            if node["name"] not in nested:   # a nested folder is listed inside its parent only
                 node["order"] = order
                 order += 1
                 tree.append(node)
@@ -686,34 +689,49 @@ class FeatureTreeTools:
                 f"a folder."
             )
 
+        def members():
+            f = self._find_feature(doc, folder_name)
+            return [str(com_prop(k, "Name")) for k in self._folder_children(f)] if f else []
+
+        # IModelDocExtension::ReorderFeature (SW2022 API help; probed live):
+        # swMoveToFolder (5) puts the item at the TOP of the folder, so a
+        # feature that depends on the folder's contents (a hole on a foldered
+        # block) is refused; swMoveAfter (3) after the folder's last member
+        # appends it at the END, keeping the build order. Membership is read
+        # back rather than trusting the returned bool. (IFeatureManager::
+        # MoveToFolder, used before, is for the Solid Bodies folder only.)
+        SW_MOVE_AFTER, SW_MOVE_TO_FOLDER = 3, 5
         moved, failed = [], []
         for name_or_id in features:
             sw_name = self._resolve(name_or_id)
             if self._find_feature(doc, sw_name) is None:
                 failed.append(f"{sw_name} (not found)")
                 continue
-            # MoveAfterFolder controls whether the item lands after the folder
-            # in build order. Which value SolidWorks accepts depends on where
-            # the folder sits relative to the feature, so try both rather than
-            # reporting a spurious rejection.
-            placed = False
+            if sw_name in members():
+                moved.append(sw_name)
+                continue
             errors = []
-            for after in (False, True):
+            current = members()
+            attempts = ([(current[-1], SW_MOVE_AFTER)] if current else []) + [(folder_name, SW_MOVE_TO_FOLDER)]
+            for target, location in attempts:
                 try:
-                    if doc.FeatureManager.MoveToFolder(folder_name, sw_name, after):
-                        placed = True
-                        break
+                    doc.Extension.ReorderFeature(sw_name, target, location)
                 except Exception as e:
                     errors.append(str(e))
-            if placed:
+                if sw_name in members():
+                    break
+            if sw_name in members():
                 moved.append(sw_name)
             elif errors:
                 failed.append(f"{sw_name} ({errors[0]})")
             else:
                 failed.append(
                     f"{sw_name} (rejected — SolidWorks refuses moves that would "
-                    f"reorder the build; the folder may sit before this feature)"
+                    f"break the build order, e.g. putting a feature ahead of a "
+                    f"feature it depends on)"
                 )
+        if moved:
+            doc.ForceRebuild3(True)
 
         if failed and not moved:
             raise Exception(
