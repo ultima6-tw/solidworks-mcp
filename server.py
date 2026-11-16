@@ -48,8 +48,11 @@ logger = logging.getLogger(__name__)
 class SolidWorksMCPServer:
     """MCP Server for SolidWorks with modular architecture"""
 
-    def __init__(self):
+    def __init__(self, bridge=None):
         self.server = Server("solidworks-mcp")
+        # bridge: a bridge.client.BridgeClient when SolidWorks must be reached
+        # through bridge/host.py (SSH / non-desktop sessions); None = direct COM.
+        self.bridge = bridge
 
         # Initialize connection, state tracker, and tool modules
         self.connection = SolidWorksConnection()
@@ -145,40 +148,51 @@ class SolidWorksMCPServer:
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-            logger.info(f"Tool called: {name} with arguments: {arguments}")
+            if self.bridge is not None:
+                # Bridge mode: this process may not be in the desktop session
+                # (e.g. over SSH), so never touch COM here — forward the call
+                # to bridge/host.py running on the interactive desktop.
+                logger.info(f"Tool called (via bridge): {name}")
+                return await asyncio.to_thread(self.bridge.call_tool, name, arguments)
+            return self.handle_call(name, arguments)
 
-            # Ensure connection
-            if not self.connection.app:
-                if not self.connection.connect():
-                    return [TextContent(
-                        type="text",
-                        text="❌ Failed to connect to SolidWorks"
-                    )]
+    def handle_call(self, name: str, arguments: Any) -> list:
+        """Run one tool call against SolidWorks and return MCP content items.
+        Shared by the stdio server and the desktop bridge host."""
+        logger.info(f"Tool called: {name} with arguments: {arguments}")
 
-            try:
-                # Route to appropriate module
-                result = self._route_tool(name, arguments)
-                # IMAGE_FILE convention: first line names a PNG to attach as
-                # image content (look_at_model — visual feedback mid-build)
-                if result.startswith("IMAGE_FILE:"):
-                    first, _, rest = result.partition("\n")
-                    img_path = first[len("IMAGE_FILE:"):].strip()
-                    try:
-                        import base64
-                        with open(img_path, "rb") as f:
-                            data = base64.b64encode(f.read()).decode("ascii")
-                        return [ImageContent(type="image", data=data,
-                                             mimeType="image/png"),
-                                TextContent(type="text", text=rest)]
-                    except Exception as e:
-                        logger.warning(f"image attach failed: {e}")
-                        return [TextContent(type="text", text=rest)]
-                return [TextContent(type="text", text=result)]
+        # Ensure connection
+        if not self.connection.app:
+            if not self.connection.connect():
+                return [TextContent(
+                    type="text",
+                    text="❌ Failed to connect to SolidWorks"
+                )]
 
-            except Exception as e:
-                error_msg = f"❌ Error in {name}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                return [TextContent(type="text", text=error_msg)]
+        try:
+            # Route to appropriate module
+            result = self._route_tool(name, arguments)
+            # IMAGE_FILE convention: first line names a PNG to attach as
+            # image content (look_at_model — visual feedback mid-build)
+            if result.startswith("IMAGE_FILE:"):
+                first, _, rest = result.partition("\n")
+                img_path = first[len("IMAGE_FILE:"):].strip()
+                try:
+                    import base64
+                    with open(img_path, "rb") as f:
+                        data = base64.b64encode(f.read()).decode("ascii")
+                    return [ImageContent(type="image", data=data,
+                                         mimeType="image/png"),
+                            TextContent(type="text", text=rest)]
+                except Exception as e:
+                    logger.warning(f"image attach failed: {e}")
+                    return [TextContent(type="text", text=rest)]
+            return [TextContent(type="text", text=result)]
+
+        except Exception as e:
+            error_msg = f"❌ Error in {name}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return [TextContent(type="text", text=error_msg)]
 
     def _route_tool(self, name: str, arguments: Any) -> str:
         """Route tool calls to appropriate module"""
@@ -228,7 +242,11 @@ class SolidWorksMCPServer:
 async def main():
     """Main entry point"""
     logger.info("Starting SolidWorks MCP Server (Modular Edition)...")
-    server = SolidWorksMCPServer()
+    from bridge.client import client_from_env
+    bridge = client_from_env()
+    if bridge is not None:
+        logger.info(f"Bridge mode: forwarding tool calls to {bridge.describe()}")
+    server = SolidWorksMCPServer(bridge=bridge)
 
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.server.run(

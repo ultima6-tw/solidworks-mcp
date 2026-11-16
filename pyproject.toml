@@ -40,5 +40,5 @@ Issues = "https://github.com/HarrierPigeon/Solidworks-MCP-Server/issues"
 [tool.setuptools]
 # `server` as a top-level module keeps `from server import SolidWorksMCPServer`
 # working for downstream consumers using an editable install.
-packages = ["solidworks"]
+packages = ["solidworks", "bridge"]
 py-modules = ["server"]
