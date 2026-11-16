@@ -3131,6 +3131,117 @@ def test_mcp_views(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+@register_test("mcp_query_tools", "MCP Query Tools", "MCP Tools",
+               "find_face / get_vertices / get_sketch_entities / get_entity on a 40x30x20 block with a Ø10 through hole", order=41)
+def test_mcp_query_tools(sw, template):
+    server = create_mcp_server()
+    R = server._route_tool
+    try:
+        R("solidworks_new_part", {})
+        sketch = _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))["id"]
+        rect = _mcp_json(R("solidworks_sketch_rectangle", {"width": 40, "height": 30, "centerX": 0, "centerY": 0}))["id"]
+        circ = _mcp_json(R("solidworks_sketch_circle", {"centerX": 0, "centerY": 0, "radius": 5}))["id"]
+        feat = _mcp_json(R("solidworks_create_extrusion", {"depth": 20}))["id"]
+        log(f"ids: sketch={sketch} rect={rect} circle={circ} feature={feat}")
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        # find_face
+        top = _mcp_json(R("solidworks_find_face", {"orientation": "+Z"}))["faces"]
+        # the sample point must lie ON the face: inside the block outline and
+        # outside the Ø10 hole (the surface's UV midpoint is the hole centre)
+        tp = top[0]["point"] if top else {"x": 0, "y": 0, "z": 0}
+        check("find_face +Z", len(top) == 1 and abs(top[0]["area"] - (1200 - 25 * math.pi)) < 0.05
+              and abs(tp["z"] - 20) < 1e-6 and math.hypot(tp["x"], tp["y"]) > 5.01
+              and abs(tp["x"]) < 20 and abs(tp["y"]) < 15, f"{[(f['area'], f['point']) for f in top]}")
+        r = _call(server, "solidworks_create_sketch", {"faceX": tp["x"], "faceY": tp["y"], "faceZ": tp["z"]})
+        check("create_sketch on that point", _mcp_ok(r), r[:160])
+        # exiting it empty: SOLIDWORKS discards the sketch; this used to
+        # overwrite the tracked record of the previous sketch
+        r = _call(server, "solidworks_exit_sketch", {})
+        check("exit empty sketch reports discarded", _mcp_ok(r) and _mcp_json(r).get("discarded"), r[:160])
+        side = _mcp_json(R("solidworks_find_face", {"orientation": "-X"}))["faces"]
+        check("find_face -X", len(side) == 1 and abs(side[0]["area"] - 600) < 0.05
+              and abs(side[0]["point"]["x"] + 20) < 1e-6, f"{[(f['area'], f['point']) for f in side]}")
+        cyl = _mcp_json(R("solidworks_find_face", {"surfaceType": "CYLINDER"}))["faces"]
+        check("find_face CYLINDER", len(cyl) == 1 and abs(cyl[0]["area"] - 2 * math.pi * 5 * 20) < 0.05,
+              f"{[f['area'] for f in cyl]}")
+        small = _mcp_json(R("solidworks_find_face", {"orientation": "ANY", "areaRank": "SMALLEST"}))["faces"]
+        check("find_face SMALLEST", len(small) == 1 and abs(small[0]["area"] - 600) < 0.05,
+              f"{[f['area'] for f in small]}")
+        by_feat = _mcp_json(R("solidworks_find_face", {"feature": feat}))["faces"]
+        check("find_face feature", len(by_feat) == 7, f"{len(by_feat)} faces (6 box + 1 hole)")
+        none = _mcp_json(R("solidworks_find_face", {"orientation": "ANGLED"}))["faces"]
+        check("find_face ANGLED (none)", none == [])
+
+        # get_vertices: the 8 box corners (circular hole edges add no corners)
+        verts = {(v["x"], v["y"], v["z"]) for v in _mcp_json(R("solidworks_get_vertices", {}))["vertices"]}
+        corners = {(x, y, z) for x in (-20, 20) for y in (-15, 15) for z in (0, 20)}
+        check("get_vertices", corners <= verts and all(v[2] in (0, 20) for v in verts),
+              f"{len(verts)} vertices, all 8 corners present: {corners <= verts}")
+
+        # get_sketch_entities / get_entity
+        ents = _mcp_json(R("solidworks_get_sketch_entities", {"sketchId": sketch})).get("entities", [])
+        check("get_sketch_entities", [e["id"] for e in ents] == [rect, circ], f"{[(e['id'], e['type']) for e in ents]}")
+        e = _mcp_json(R("solidworks_get_entity", {"id": circ}))
+        check("get_entity circle", e.get("type") and abs(float(e["shapeInfo"].get("radius", 0)) - 5) < 1e-6,
+              f"type={e.get('type')} shapeInfo={e.get('shapeInfo')}")
+        f = _mcp_json(R("solidworks_get_entity", {"id": feat}))
+        check("get_entity feature", f.get("id") == feat and f.get("type"), f"{f.get('type')} {f.get('name')}")
+        s = _mcp_json(R("solidworks_get_entity", {"id": sketch}))
+        check("get_entity sketch", s.get("entityCount") == 2, f"entityCount={s.get('entityCount')}")
+        missing = R("solidworks_get_entity", {"id": "feat:NoSuchFeature"})
+        check("get_entity unknown id", "✓" not in missing, missing[:120])
+        return ok
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
+@register_test("mcp_batch", "MCP Batch", "MCP Tools",
+               "Build a box in one batch; stopOnError skips the rest, stopOnError=false continues; nesting refused", order=42)
+def test_mcp_batch(sw, template):
+    server = create_mcp_server()
+    R = server._route_tool
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        b = _mcp_json(R("solidworks_batch", {"calls": [
+            {"tool": "solidworks_new_part"},
+            {"tool": "solidworks_create_sketch", "args": {"plane": "Front"}},
+            {"tool": "solidworks_sketch_rectangle", "args": {"width": 40, "height": 30, "centerX": 0, "centerY": 0}},
+            {"tool": "solidworks_create_extrusion", "args": {"depth": 20}},
+        ]}))
+        check("build batch 4/4", all(c["ok"] for c in b["calls"]) and b["result"].startswith("✓"), b["result"])
+        check("box volume", abs(_volume(server) - 24000) < 0.5)
+
+        bad = [{"tool": "solidworks_get_body_info"},
+               {"tool": "solidworks_suppress_feature", "args": {"feature": "NoSuchFeature", "suppress": True}},
+               {"tool": "solidworks_get_body_info"}]
+        b = _mcp_json(R("solidworks_batch", {"calls": bad}))
+        flags = [(c["ok"], c.get("error", "")[:30]) for c in b["calls"]]
+        check("stopOnError (default): ok, fail, skipped",
+              [c["ok"] for c in b["calls"]] == [True, False, False] and "skipped" in b["calls"][2].get("error", "")
+              and b["result"].startswith("⚠"), f"{flags}")
+        b = _mcp_json(R("solidworks_batch", {"calls": bad, "stopOnError": False}))
+        check("stopOnError=false: ok, fail, ok", [c["ok"] for c in b["calls"]] == [True, False, True],
+              f"{[c['ok'] for c in b['calls']]}")
+        nested = _call(server, "solidworks_batch", {"calls": [{"tool": "solidworks_batch", "args": {"calls": []}}]})
+        check("nested batch refused", not _mcp_ok(nested), nested[:80])
+        check("volume unchanged", abs(_volume(server) - 24000) < 0.5)
+        return ok
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
@@ -3310,6 +3421,61 @@ def test_assembly_plane_mates(sw, template):
         return False
     finally:
         shutil.rmtree(test_dir, ignore_errors=True)
+
+
+@register_test("assembly_interference_suppress", "Interference + Suppress Component", "Assembly",
+               "Cylinder dropped inside a cube: interference = cylinder volume; suppress removes it, resolve restores it", order=4)
+def test_assembly_interference_suppress(sw, template):
+    d = tempfile.mkdtemp(prefix="swmcp_asm_tests_")   # left in %TEMP%; never deleted by the test
+    server = create_mcp_server()
+    R = server._route_tool
+    cyl_vol, cube_vol = math.pi * 10 ** 2 * 30, 50 ** 3
+    try:
+        cube_file = mcp_build_and_save_box(server, os.path.join(d, "intf_cube"), 50)
+        cyl_file = mcp_build_and_save_cylinder(server, os.path.join(d, "intf_cyl"), 10, 30)
+        _mcp_json(R("solidworks_new_assembly", {}))
+        _mcp_json(R("solidworks_insert_component", {"path": cube_file}))
+        cyl = _mcp_json(R("solidworks_insert_component", {"path": cyl_file}))   # bbox-centred inside the cube
+        cyl_id = cyl["id"]
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        def mass():
+            return _mcp_json(R("solidworks_get_assembly_mass_properties", {}))["volume_mm3"]
+
+        it = _mcp_json(R("solidworks_check_interference", {}))
+        vols = [i["volume_mm3"] for i in it.get("interferences", [])]
+        comps = it["interferences"][0].get("components", []) if it.get("interferences") else []
+        check("interference = cylinder volume", it.get("count") == 1 and abs(sum(vols) - cyl_vol) < 0.5
+              and len(comps) == 2, f"count={it.get('count')} volumes={vols} components={comps}")
+
+        r = _call(server, "solidworks_suppress_component", {"component": cyl_id, "suppress": True})
+        check("suppress cylinder", _mcp_ok(r), r[:120])
+        it = _mcp_json(R("solidworks_check_interference", {}))
+        check("no interference while suppressed", it.get("count") == 0, f"count={it.get('count')}")
+        m = mass()
+        check("mass without the cylinder", abs(m - cube_vol) < 0.5, f"{m:.2f} (expected {cube_vol})")
+
+        r = _call(server, "solidworks_suppress_component", {"component": cyl_id, "suppress": False})
+        check("resolve cylinder", _mcp_ok(r), r[:120])
+        m = mass()
+        check("mass with the cylinder again", abs(m - cube_vol - cyl_vol) < 0.5, f"{m:.2f} (expected {cube_vol + cyl_vol:.2f})")
+        it = _mcp_json(R("solidworks_check_interference", {}))
+        check("interference back after resolve", it.get("count") == 1, f"count={it.get('count')}")
+
+        check("unknown component refused",
+              not _mcp_ok(_call(server, "solidworks_suppress_component", {"component": "comp:nope-1", "suppress": True})))
+        return ok
+    except Exception as e:
+        log(f"assembly_interference_suppress FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        _call(server, "solidworks_close_document", {})
 
 
 @register_test("assembly_state", "Assembly State (get_state + scope isolation)", "Assembly",

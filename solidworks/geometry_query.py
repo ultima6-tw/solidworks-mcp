@@ -523,9 +523,51 @@ class GeometryQueryTools:
             v_mid = (uv[2] + uv[3]) / 2.0
             surface = face.GetSurface  # property: ISurface COM object
             result = surface.Evaluate(u_mid, v_mid, 0, 0)  # method: returns (x,y,z,...)
-            return (result[0] * 1000.0, result[1] * 1000.0, result[2] * 1000.0)
+            pt = (result[0], result[1], result[2])
+            # The UV midpoint of the SURFACE can fall outside the trimmed face
+            # — e.g. inside the hole of a plate with a centred hole — and a
+            # point there would select the wrong face. Keep it only if it
+            # really lies on the face; otherwise use an interior point.
+            if self._dist_to_face(face, pt) > 1e-7:
+                inner = self._interior_point(face)
+                if inner is not None:
+                    pt = inner
+            return (pt[0] * 1000.0, pt[1] * 1000.0, pt[2] * 1000.0)
         except Exception:
             return self._face_centroid_from_edges(face)
+
+    @staticmethod
+    def _dist_to_face(face, pt):
+        """Distance (m) from a point to the trimmed face (IFace2::GetClosestPointOn)."""
+        cp = face.GetClosestPointOn(pt[0], pt[1], pt[2])
+        return ((cp[0] - pt[0]) ** 2 + (cp[1] - pt[1]) ** 2 + (cp[2] - pt[2]) ** 2) ** 0.5
+
+    @staticmethod
+    def _interior_point(face):
+        """A point inside the trimmed face (m): the centroid of the largest
+        display triangle (IFace2::GetTessTriangles, 9 floats per triangle),
+        projected onto the face. None if the face has no tessellation."""
+        try:
+            tri = face.GetTessTriangles(True)
+        except Exception:
+            return None
+        if not tri:
+            return None
+        best, best_area = None, -1.0
+        for i in range(0, len(tri) - 8, 9):
+            a, b, c = tri[i:i + 3], tri[i + 3:i + 6], tri[i + 6:i + 9]
+            ab = [b[k] - a[k] for k in range(3)]
+            ac = [c[k] - a[k] for k in range(3)]
+            cr = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2],
+                  ab[0] * ac[1] - ab[1] * ac[0])
+            area = (cr[0] ** 2 + cr[1] ** 2 + cr[2] ** 2) ** 0.5
+            if area > best_area:
+                best_area = area
+                best = [(a[k] + b[k] + c[k]) / 3.0 for k in range(3)]
+        if best is None:
+            return None
+        cp = face.GetClosestPointOn(best[0], best[1], best[2])
+        return (cp[0], cp[1], cp[2])
 
     def _face_centroid_from_edges(self, face):
         """Fallback: approximate face centroid by averaging edge vertex positions."""

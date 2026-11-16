@@ -2219,6 +2219,12 @@ class SketchingTools:
             sketch_id = ""
             if self.tracker:
                 sketch_id = self.tracker.close_sketch(actual_name)
+                if sketch_id is None:
+                    logger.info("Exited an empty sketch; SOLIDWORKS discarded it")
+                    return self._json_result(
+                        "✓ Exited sketch mode — the sketch was empty, so "
+                        "SOLIDWORKS discarded it (nothing was created)",
+                        id=None, type="exit_sketch", discarded=True)
             logger.info(f"Exited sketch: {actual_name}")
             return self._json_result(
                 f"✓ Exited sketch mode ({actual_name})",

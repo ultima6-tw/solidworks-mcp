@@ -252,10 +252,22 @@ class StateTracker:
         logger.info(f"Registered sketch: {sketch_id} on {plane}")
         return sketch_id
 
-    def close_sketch(self, actual_sw_name: str) -> str:
+    def close_sketch(self, actual_sw_name: str) -> Optional[str]:
+        """Close the active sketch; actual_sw_name is the newest sketch in the
+        feature tree. Returns the sketch ID, or None when the active sketch is
+        gone: SOLIDWORKS discards an EMPTY sketch on exit, so the newest sketch
+        is then an older one that must not be overwritten by the empty record."""
         scope = self._scope()
         if scope.active_sketch:
             record = scope.sketches.get(scope.active_sketch)
+            other = scope.sketches.get(f"sketch:{actual_sw_name}")
+            if record and other is not None and other is not record:
+                del scope.sketches[scope.active_sketch]
+                prefix = f"entity:{record.sw_name}/"
+                for eid in [e for e in scope.entities if e.startswith(prefix)]:
+                    scope.entities.pop(eid)
+                scope.active_sketch = None
+                return None
             if record and record.sw_name != actual_sw_name:
                 old_id = scope.active_sketch
                 del scope.sketches[old_id]
