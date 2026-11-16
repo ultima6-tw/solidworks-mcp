@@ -2737,6 +2737,81 @@ def test_mcp_hole_wizard(sw, template):
     ])
 
 
+def _sketch_then_extrude(label, steps, want, depth=10):
+    """New part, sketch on Front, run (tool, args) steps, extrude, check volume."""
+    server = create_mcp_server()
+    R = server._route_tool
+    try:
+        R("solidworks_new_part", {})
+        R("solidworks_create_sketch", {"plane": "Front"})
+        results = {}
+        for tool, args in steps:
+            r = _call(server, tool, args)
+            if not _mcp_ok(r):
+                log(f"{label}: {tool} -> {r}", "ERROR")
+                return False
+            results.setdefault(tool, []).append(r)
+        if not _mcp_ok(_call(server, "solidworks_create_extrusion", {"depth": depth})):
+            log(f"{label}: extrusion failed", "ERROR")
+            return False
+        ok = _expect_volume(server, label, want, rel=1e-5)
+        return results if ok else False
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
+@register_test("mcp_sketch_profile", "MCP Sketch Profile", "MCP Tools",
+               "Chained lines + tangent arc + auto close + corner fillet; check extruded volume", order=32)
+def test_mcp_sketch_profile(sw, template):
+    # (0,0)->(40,0)->(40,20) then a forward tangent arc to (20,20): a half
+    # circle R10 bulging upward; line to (0,20); auto-close to (0,0); R5 fillet
+    # at (0,0) removes r^2 - pi r^2 / 4
+    area = 40 * 20 + math.pi * 10 ** 2 / 2 - (25 - math.pi * 25 / 4)
+    return bool(_sketch_then_extrude("profile", [("solidworks_sketch_profile", {
+        "startX": 0, "startY": 0,
+        "segments": [{"x": 40, "y": 0}, {"x": 40, "y": 20},
+                     {"type": "TANGENT_ARC", "x": 20, "y": 20}, {"x": 0, "y": 20}],
+        "cornerFillets": [{"x": 0, "y": 0, "radius": 5}]})], area * 10))
+
+
+@register_test("mcp_sketch_fillet", "MCP Sketch Fillet", "MCP Tools",
+               "R5 sketch fillet on a rectangle corner; check extruded volume", order=33)
+def test_mcp_sketch_fillet(sw, template):
+    area = 40 * 20 - (25 - math.pi * 25 / 4)
+    return bool(_sketch_then_extrude("sketch_fillet", [
+        ("solidworks_sketch_rectangle", {"width": 40, "height": 20, "centerX": 0, "centerY": 0}),
+        ("solidworks_sketch_fillet", {"x": 20, "y": 10, "radius": 5})], area * 10))
+
+
+@register_test("mcp_sketch_offset", "MCP Sketch Offset", "MCP Tools",
+               "Offset a R10 circle by +5 and by -5; the ring areas tell which side each sign goes", order=34)
+def test_mcp_sketch_offset(sw, template):
+    ring = lambda a, b: math.pi * abs(a * a - b * b) * 10
+    circle = ("solidworks_sketch_circle", {"centerX": 0, "centerY": 0, "radius": 10})
+    plus = _sketch_then_extrude("offset +5 (outward, R15)", [
+        circle, ("solidworks_sketch_offset", {"x": 10, "y": 0, "distance": 5})], ring(15, 10))
+    minus = _sketch_then_extrude("offset -5 (inward, R5)", [
+        circle, ("solidworks_sketch_offset", {"x": 10, "y": 0, "distance": -5})], ring(10, 5))
+    return bool(plus) and bool(minus)
+
+
+@register_test("mcp_sketch_dimension", "MCP Sketch Dimension", "MCP Tools",
+               "Dimension a rectangle edge to 60 (sketch_dimension), then 70 (set_dimension_value); check volumes", order=35)
+def test_mcp_sketch_dimension(sw, template):
+    rect = ("solidworks_sketch_rectangle", {"width": 40, "height": 20, "centerX": 0, "centerY": 0})
+    dim = ("solidworks_sketch_dimension", {"entityPoints": [{"x": 0, "y": 10}], "dimX": 0, "dimY": 20, "value": 60})
+    r = _sketch_then_extrude("sketch_dimension 60", [rect, dim], 60 * 20 * 10)
+    if not r:
+        return False
+    param = _mcp_json(r["solidworks_sketch_dimension"][0]).get("parameter")
+    if not param or not param.startswith("D"):
+        log(f"sketch_dimension returned no parameter name: {param!r}", "ERROR")
+        return False
+    log(f"dimension name: {param}", "SUCCESS")
+    return bool(_sketch_then_extrude("set_dimension_value 70", [
+        rect, dim, ("solidworks_set_dimension_value", {"dimX": 0, "dimY": 20, "value": 70})], 70 * 20 * 10))
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
