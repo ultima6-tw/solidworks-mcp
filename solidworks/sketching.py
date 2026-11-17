@@ -107,6 +107,43 @@ def _segment_list(obj):
     return [obj]
 
 
+def _near(p, q, tol=_DRAW_TOL_M):
+    return abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+
+
+def _fmt_mm(p):
+    return f"({p[0] * 1000:.4f}, {p[1] * 1000:.4f})"
+
+
+def _seg_sig(seg):
+    """Geometry signature of a sketch segment, used to find the segments a
+    Create* call added when the call itself returns something else
+    (CreateSketchSlot returns an ISketchSlot). ISketchSegment.GetID is no use
+    for this: probed on SW2022 it repeats within one sketch."""
+    try:
+        t = com_prop(seg, "GetType")
+        r = lambda p: tuple(round(v, 9) for v in _xy(p))
+        sig = [t]
+        if t in (0, 1):
+            sig += sorted([r(com_prop(seg, "GetStartPoint2")), r(com_prop(seg, "GetEndPoint2"))])
+        if t == 1:
+            sig.append(r(com_prop(seg, "GetCenterPoint2")))
+        sig.append(bool(com_prop(seg, "ConstructionGeometry")))
+        return tuple(sig)
+    except Exception:
+        return ("?",)
+
+
+def _spline_points(obj):
+    """Through-points of a spline in metres. GetPoints2 comes back as sketch
+    point objects or as a flat x,y,z array depending on late binding."""
+    v = getattr(obj, "GetPoints2")
+    seq = list(v() if callable(v) else v)
+    if seq and isinstance(seq[0], float):
+        return [(seq[i], seq[i + 1]) for i in range(0, len(seq), 3)]
+    return [_xy(p) for p in seq]
+
+
 def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
     """Fallback: find and auto-dismiss the SolidWorks 'Modify' dimension dialog.
 
@@ -1292,6 +1329,133 @@ class SketchingTools:
                 f"{b[1] * 1000:.4f}) mm, wanted ({x1 * 1000:.4f}, {y1 * 1000:.4f})-"
                 f"({x2 * 1000:.4f}, {y2 * 1000:.4f})"]
 
+    @staticmethod
+    def _check_point(obj, x, y):
+        got = _xy(obj)
+        return [] if _near(got, (x, y)) else [f"point {_fmt_mm(got)} mm, wanted {_fmt_mm((x, y))}"]
+
+    @staticmethod
+    def _check_arc_ends(obj, p, q):
+        """Start/end of an arc vs p, q (either order)."""
+        a = _xy(com_prop(obj, "GetStartPoint2"))
+        b = _xy(com_prop(obj, "GetEndPoint2"))
+        if (_near(a, p) and _near(b, q)) or (_near(a, q) and _near(b, p)):
+            return []
+        return [f"arc ends {_fmt_mm(a)}-{_fmt_mm(b)} mm, wanted {_fmt_mm(p)}-{_fmt_mm(q)}"]
+
+    @classmethod
+    def _check_arc_3pt(cls, obj, p1, p2, p3):
+        out = cls._check_arc_ends(obj, p1, p2)
+        c = _xy(com_prop(obj, "GetCenterPoint2"))
+        r = float(com_prop(obj, "GetRadius"))
+        d = math.hypot(p3[0] - c[0], p3[1] - c[1])
+        if abs(d - r) > _DRAW_TOL_M:
+            out.append(f"arc (centre {_fmt_mm(c)}, radius {r * 1000:.4f} mm) does not pass "
+                       f"through {_fmt_mm(p3)}")
+        return out
+
+    @classmethod
+    def _check_arc_center(cls, obj, c, p1, p2):
+        out = []
+        got_c = _xy(com_prop(obj, "GetCenterPoint2"))
+        if not _near(got_c, c):
+            out.append(f"centre {_fmt_mm(got_c)} mm, wanted {_fmt_mm(c)}")
+        r = math.hypot(p1[0] - c[0], p1[1] - c[1])
+        got_r = float(com_prop(obj, "GetRadius"))
+        if abs(got_r - r) > _DRAW_TOL_M:
+            out.append(f"radius {got_r * 1000:.4f} mm, wanted {r * 1000:.4f}")
+        d = math.hypot(p2[0] - c[0], p2[1] - c[1]) or 1.0
+        end = (c[0] + r * (p2[0] - c[0]) / d, c[1] + r * (p2[1] - c[1]) / d)
+        return out + cls._check_arc_ends(obj, p1, end)
+
+    @staticmethod
+    def _check_ellipse(obj, c, major_r, minor_r, angle_rad):
+        out = []
+        got_c = _xy(com_prop(obj, "GetCenterPoint2"))
+        maj = _xy(com_prop(obj, "GetMajorPoint2"))
+        mnr = _xy(com_prop(obj, "GetMinorPoint2"))
+        if not _near(got_c, c):
+            out.append(f"centre {_fmt_mm(got_c)} mm, wanted {_fmt_mm(c)}")
+        vx, vy = maj[0] - got_c[0], maj[1] - got_c[1]
+        if abs(math.hypot(vx, vy) - major_r) > _DRAW_TOL_M:
+            out.append(f"major radius {math.hypot(vx, vy) * 1000:.4f} mm, wanted {major_r * 1000:.4f}")
+        if abs(vx * math.sin(angle_rad) - vy * math.cos(angle_rad)) > _DRAW_TOL_M:
+            out.append(f"major axis towards {_fmt_mm(maj)} mm is not at the requested angle")
+        rm = math.hypot(mnr[0] - got_c[0], mnr[1] - got_c[1])
+        if abs(rm - minor_r) > _DRAW_TOL_M:
+            out.append(f"minor radius {rm * 1000:.4f} mm, wanted {minor_r * 1000:.4f}")
+        return out
+
+    @staticmethod
+    def _check_spline(obj, pts):
+        got = _spline_points(obj)
+        if len(got) != len(pts):
+            return [f"{len(got)} through-points, wanted {len(pts)}"]
+        bad = [f"{_fmt_mm(g)} instead of {_fmt_mm(w)}" for g, w in zip(got, pts) if not _near(g, w)]
+        return [f"spline points {'; '.join(bad)} mm"] if bad else []
+
+    @staticmethod
+    def _check_polygon(obj, cx, cy, vertex_r, n):
+        """Regular polygon: n sides, every vertex vertex_r from (cx, cy), one
+        vertex straight to the right of the centre (how it is drawn)."""
+        lines = [s for s in _segment_list(obj)
+                 if com_prop(s, "GetType") == 0 and not com_prop(s, "ConstructionGeometry")]
+        if len(lines) != n:
+            return [f"{len(lines)} sides, wanted {n}"]
+        verts = [_xy(com_prop(s, p)) for s in lines for p in ("GetStartPoint2", "GetEndPoint2")]
+        off = [v for v in verts if abs(math.hypot(v[0] - cx, v[1] - cy) - vertex_r) > _DRAW_TOL_M]
+        out = []
+        if off:
+            out.append(f"vertex {_fmt_mm(off[0])} mm is not {vertex_r * 1000:.4f} mm from the "
+                       f"centre {_fmt_mm((cx, cy))}")
+        if not any(_near(v, (cx + vertex_r, cy)) for v in verts):
+            out.append(f"no vertex at {_fmt_mm((cx + vertex_r, cy))} mm")
+        return out
+
+    @staticmethod
+    def _check_slot(segs, p1, p2, width):
+        """Straight slot: two end arcs of radius width/2 centred on p1, p2 and
+        two side lines whose ends lie on those arcs."""
+        arcs = [s for s in segs if com_prop(s, "GetType") == 1 and not com_prop(s, "ConstructionGeometry")]
+        lines = [s for s in segs if com_prop(s, "GetType") == 0 and not com_prop(s, "ConstructionGeometry")]
+        if len(arcs) != 2 or len(lines) != 2:
+            return [f"{len(arcs)} end arcs and {len(lines)} side lines found, wanted 2 and 2"]
+        r = width / 2
+        out = []
+        centres = [_xy(com_prop(a, "GetCenterPoint2")) for a in arcs]
+        if not ((_near(centres[0], p1) and _near(centres[1], p2)) or
+                (_near(centres[0], p2) and _near(centres[1], p1))):
+            out.append(f"end-arc centres {_fmt_mm(centres[0])}, {_fmt_mm(centres[1])} mm, "
+                       f"wanted {_fmt_mm(p1)}, {_fmt_mm(p2)}")
+        for a in arcs:
+            got_r = float(com_prop(a, "GetRadius"))
+            if abs(got_r - r) > _DRAW_TOL_M:
+                out.append(f"end-arc radius {got_r * 1000:.4f} mm, wanted {r * 1000:.4f}")
+                break
+        for ln in lines:
+            for p in (_xy(com_prop(ln, "GetStartPoint2")), _xy(com_prop(ln, "GetEndPoint2"))):
+                if min(abs(math.hypot(p[0] - c[0], p[1] - c[1]) - r) for c in (p1, p2)) > _DRAW_TOL_M:
+                    out.append(f"side-line end {_fmt_mm(p)} mm is off the slot outline")
+                    return out
+        return out
+
+    def _new_segments(self, doc, call):
+        """Run call() and return the sketch segments it added (by geometry
+        signature), or None if the call returned None."""
+        from collections import Counter
+        sk = doc.SketchManager.ActiveSketch
+        before = Counter(_seg_sig(s) for s in (com_prop(sk, "GetSketchSegments") or []))
+        if call() is None:
+            return None
+        new = []
+        for s in (com_prop(sk, "GetSketchSegments") or []):
+            k = _seg_sig(s)
+            if before[k] > 0:
+                before[k] -= 1
+            else:
+                new.append(s)
+        return new
+
     def sketch_rectangle(self, args: dict) -> str:
         """Draw rectangle with spatial awareness"""
         doc = self.connection.get_active_doc()
@@ -1495,6 +1659,7 @@ class SketchingTools:
         start = (float(args["startX"]), float(args["startY"]))
         cur = start
         drawn = []
+        drawn_objs = []   # (segment, type, from_mm, to_mm) for the read-back check
         xs, ys = [start[0]], [start[1]]
         try:
             for i, seg in enumerate(segments):
@@ -1526,17 +1691,38 @@ class SketchingTools:
                     raise Exception(f"segment {i} ({stype} to {end}) failed — "
                                     f"profile aborted after {len(drawn)} segments")
                 drawn.append(stype)
+                drawn_objs.append((obj, stype, cur, end))
                 xs.append(end[0]); ys.append(end[1])
                 cur = end
 
             closed = False
             if args.get("close", True) and (abs(cur[0] - start[0]) > 1e-9
                                             or abs(cur[1] - start[1]) > 1e-9):
-                if sm.CreateLine(cur[0] / 1000.0, cur[1] / 1000.0, 0.0,
-                                 start[0] / 1000.0, start[1] / 1000.0, 0.0) is None:
+                obj = sm.CreateLine(cur[0] / 1000.0, cur[1] / 1000.0, 0.0,
+                                    start[0] / 1000.0, start[1] / 1000.0, 0.0)
+                if obj is None:
                     raise Exception("closing line failed")
                 drawn.append("LINE(close)")
+                drawn_objs.append((obj, "LINE", cur, start))
                 closed = True
+
+            # Read every segment back (snapping can move an endpoint onto
+            # nearby geometry while the call still succeeds). No redraw with
+            # snapping off here: snapping is what joins the chained segments,
+            # so the whole profile is removed and the call fails instead.
+            problems = []
+            for k, (o, st, a, b) in enumerate(drawn_objs):
+                a_m, b_m = (a[0] / 1000.0, a[1] / 1000.0), (b[0] / 1000.0, b[1] / 1000.0)
+                p = (self._check_line(o, a_m[0], a_m[1], b_m[0], b_m[1]) if st == "LINE"
+                     else self._check_arc_ends(o, a_m, b_m))
+                problems += [f"segment {k} ({st}): {x}" for x in p]
+            if problems:
+                self._delete_drawn(doc, [o for o, *_ in drawn_objs])
+                raise Exception(
+                    "Profile not drawn as requested -- SolidWorks snapped it onto nearby "
+                    f"geometry ({'; '.join(problems)}). The profile was removed. Draw it "
+                    "with separate sketch_line/sketch_arc calls (each is checked and "
+                    "redrawn exactly), or zoom in on the area first.")
 
             fillet_notes = []
             for f in (args.get("cornerFillets") or []):
@@ -1665,11 +1851,11 @@ class SketchingTools:
         x1, y1 = args["x1"], args["y1"]
         x2, y2 = args["x2"], args["y2"]
 
-        obj = _direct_retry(doc).CreateCenterLine(
-            x1 / 1000.0, y1 / 1000.0, 0.0,
-            x2 / 1000.0, y2 / 1000.0, 0.0
-        )
-        self._check_drawn(obj, f"centerline ({x1}, {y1}) -> ({x2}, {y2})")
+        p1, p2 = (x1 / 1000.0, y1 / 1000.0), (x2 / 1000.0, y2 / 1000.0)
+        self._draw_checked(
+            doc, f"centerline ({x1}, {y1}) -> ({x2}, {y2})",
+            lambda sm: sm.CreateCenterLine(p1[0], p1[1], 0.0, p2[0], p2[1], 0.0),
+            lambda o: self._check_line(o, p1[0], p1[1], p2[0], p2[1]))
 
         # Centerlines are construction geometry - don't update last_shape
         coordinates = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
@@ -1695,8 +1881,10 @@ class SketchingTools:
 
         x, y = args["x"], args["y"]
 
-        obj = _direct_retry(doc).CreatePoint(x / 1000.0, y / 1000.0, 0.0)
-        self._check_drawn(obj, f"point at ({x}, {y})")
+        self._draw_checked(
+            doc, f"point at ({x}, {y})",
+            lambda sm: sm.CreatePoint(x / 1000.0, y / 1000.0, 0.0),
+            lambda o: self._check_point(o, x / 1000.0, y / 1000.0))
 
         # Points are zero-dimensional - don't update last_shape
         coordinates = {"x": x, "y": y}
@@ -1727,12 +1915,11 @@ class SketchingTools:
             x2, y2 = args["x2"], args["y2"]
             x3, y3 = args["x3"], args["y3"]
 
-            obj = _direct_retry(doc).Create3PointArc(
-                x1 / 1000.0, y1 / 1000.0, 0.0,
-                x2 / 1000.0, y2 / 1000.0, 0.0,
-                x3 / 1000.0, y3 / 1000.0, 0.0
-            )
-            self._check_drawn(obj, "3-point arc")
+            p1, p2, p3 = (x1 / 1000.0, y1 / 1000.0), (x2 / 1000.0, y2 / 1000.0), (x3 / 1000.0, y3 / 1000.0)
+            self._draw_checked(
+                doc, "3-point arc",
+                lambda sm: sm.Create3PointArc(p1[0], p1[1], 0.0, p2[0], p2[1], 0.0, p3[0], p3[1], 0.0),
+                lambda o: self._check_arc_3pt(o, p1, p2, p3))
 
             all_x = [x1, x2, x3]
             all_y = [y1, y2, y3]
@@ -1769,13 +1956,12 @@ class SketchingTools:
             x1, y1 = args["x1"], args["y1"]
             x2, y2 = args["x2"], args["y2"]
 
-            obj = _direct_retry(doc).CreateArc(
-                cx / 1000.0, cy / 1000.0, 0.0,
-                x1 / 1000.0, y1 / 1000.0, 0.0,
-                x2 / 1000.0, y2 / 1000.0, 0.0,
-                1  # direction: 1 = counter-clockwise
-            )
-            self._check_drawn(obj, "center-point arc")
+            c, p1, p2 = (cx / 1000.0, cy / 1000.0), (x1 / 1000.0, y1 / 1000.0), (x2 / 1000.0, y2 / 1000.0)
+            self._draw_checked(
+                doc, "center-point arc",
+                lambda sm: sm.CreateArc(c[0], c[1], 0.0, p1[0], p1[1], 0.0, p2[0], p2[1], 0.0,
+                                        1),  # direction: 1 = counter-clockwise
+                lambda o: self._check_arc_center(o, c, p1, p2))
 
             radius = math.sqrt((x1 - cx) ** 2 + (y1 - cy) ** 2)
             shape_info = {
@@ -1841,13 +2027,10 @@ class SketchingTools:
         edge_x = cx_m + r_m
         edge_y = cy_m
 
-        obj = _direct_retry(doc).CreatePolygon(
-            cx_m, cy_m, 0.0,
-            edge_x, edge_y, 0.0,
-            num_sides,
-            inscribed
-        )
-        self._check_drawn(obj, f"{num_sides}-sided polygon")
+        self._draw_checked(
+            doc, f"{num_sides}-sided polygon",
+            lambda sm: sm.CreatePolygon(cx_m, cy_m, 0.0, edge_x, edge_y, 0.0, num_sides, inscribed),
+            lambda o: self._check_polygon(o, cx_m, cy_m, r_m, num_sides))
 
         shape_info = {
             "type": "polygon",
@@ -1907,12 +2090,10 @@ class SketchingTools:
         minor_x = cx_m + minor_r_m * math.cos(angle_rad + math.pi / 2)
         minor_y = cy_m + minor_r_m * math.sin(angle_rad + math.pi / 2)
 
-        obj = _direct_retry(doc).CreateEllipse(
-            cx_m, cy_m, 0.0,
-            major_x, major_y, 0.0,
-            minor_x, minor_y, 0.0
-        )
-        self._check_drawn(obj, f"ellipse {major_r}mm x {minor_r}mm")
+        self._draw_checked(
+            doc, f"ellipse {major_r}mm x {minor_r}mm",
+            lambda sm: sm.CreateEllipse(cx_m, cy_m, 0.0, major_x, major_y, 0.0, minor_x, minor_y, 0.0),
+            lambda o: self._check_ellipse(o, (cx_m, cy_m), major_r_m, minor_r_m, angle_rad))
 
         extent = max(major_r, minor_r)
         shape_info = {
@@ -1966,8 +2147,11 @@ class SketchingTools:
         point_array = win32com.client.VARIANT(
             pythoncom.VT_ARRAY | pythoncom.VT_R8, point_data
         )
-        obj = _direct_retry(doc).CreateSpline2(point_array, True)
-        self._check_drawn(obj, f"spline through {len(points)} points")
+        want = [(p["x"] / 1000.0, p["y"] / 1000.0) for p in points]
+        self._draw_checked(
+            doc, f"spline through {len(points)} points",
+            lambda sm: sm.CreateSpline2(point_array, True),
+            lambda o: self._check_spline(o, want))
 
         xs = [p["x"] for p in points]
         ys = [p["y"] for p in points]
@@ -2012,17 +2196,21 @@ class SketchingTools:
         x2, y2 = args["x2"], args["y2"]
         width = args["width"]
 
-        obj = _direct_retry(doc).CreateSketchSlot(
-            0,                                   # slotType: straight (center line)
-            0,                                   # lengthType: center-to-center
-            width / 1000.0,                      # slot width in meters
-            x1 / 1000.0, y1 / 1000.0, 0.0,     # first center point
-            x2 / 1000.0, y2 / 1000.0, 0.0,     # second center point
-            0.0, 0.0, 0.0,                       # third point (unused for straight)
-            1,                                    # centerArcDirection
-            False                                 # addDimension
-        )
-        self._check_drawn(obj, f"slot width {width}mm")
+        # CreateSketchSlot returns an ISketchSlot, not segments: the segments it
+        # added are found by comparing the sketch before and after.
+        p1, p2 = (x1 / 1000.0, y1 / 1000.0), (x2 / 1000.0, y2 / 1000.0)
+        self._draw_checked(
+            doc, f"slot width {width}mm",
+            lambda sm: self._new_segments(doc, lambda: sm.CreateSketchSlot(
+                0,                                   # slotType: straight (center line)
+                0,                                   # lengthType: center-to-center
+                width / 1000.0,                      # slot width in meters
+                p1[0], p1[1], 0.0,                   # first center point
+                p2[0], p2[1], 0.0,                   # second center point
+                0.0, 0.0, 0.0,                       # third point (unused for straight)
+                1,                                   # centerArcDirection
+                False)),                             # addDimension
+            lambda segs: self._check_slot(segs, p1, p2, width / 1000.0))
 
         half_w = width / 2
         shape_info = {

@@ -3729,6 +3729,135 @@ def test_mcp_sketch_snapping(sw, template):
         return False
 
 
+@register_test("mcp_sketch_snapping_tools", "MCP Sketch Snapping: Other Tools", "MCP Tools",
+               "Same zoomed-out setup as mcp_sketch_snapping, with a 7x14 rectangle next to each entity: "
+               "3-point and centre arcs, polygon, ellipse, slot, spline, point and centerline come out exactly "
+               "as asked (probed: all but the spline used to snap onto the rectangle while reporting success); "
+               "a profile is either exact or refused, never silently moved", order=50)
+def test_mcp_sketch_snapping_tools(sw, template):
+    try:
+        import math
+        import types
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        def prop(o, n):
+            v = getattr(o, n)
+            return v() if isinstance(v, types.MethodType) else v
+
+        def mm(p):
+            if hasattr(p, "X"):
+                return (round(prop(p, "X") * 1000, 4), round(prop(p, "Y") * 1000, 4))
+            return (round(p[0] * 1000, 4), round(p[1] * 1000, 4))
+
+        def near(p, q, tol=1e-4):
+            return abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+
+        snap_before = sw.GetUserPreferenceToggle(249)
+        server = create_mcp_server()
+        R = server._route_tool
+        results = [R("solidworks_new_part", {}),
+                   R("solidworks_create_sketch", {"plane": "Front"}),
+                   R("solidworks_sketch_rectangle", {"x1": 0, "y1": 0, "x2": 210, "y2": 430})]
+        if not mcp_check_results(results):
+            return False
+        doc = sw.ActiveDoc
+        doc.ViewZoomtofit2()
+        bait = [(40, 60), (40, 120), (40, 180), (40, 240), (40, 300), (40, 360), (120, 60), (120, 120), (120, 180)]
+        results = [R("solidworks_sketch_rectangle", {"centerX": x, "centerY": y, "width": 7, "height": 14})
+                   for x, y in bait]
+        # each entity 0.3-2.5 mm from its bait rectangle (right side x = 43.5 / 123.5)
+        results += [
+            R("solidworks_sketch_arc", {"mode": "3point", "x1": 45, "y1": 55, "x2": 45, "y2": 65, "x3": 47, "y3": 60}),
+            R("solidworks_sketch_arc", {"mode": "center", "centerX": 45.2, "centerY": 120,
+                                        "x1": 46.9, "y1": 120, "x2": 45.2, "y2": 121.7}),
+            R("solidworks_sketch_polygon", {"centerX": 46, "centerY": 180, "radius": 2, "numSides": 6}),
+            R("solidworks_sketch_ellipse", {"centerX": 44.5, "centerY": 240, "majorRadius": 2, "minorRadius": 1}),
+            R("solidworks_sketch_slot", {"x1": 46, "y1": 296, "x2": 46, "y2": 304, "width": 3.4}),
+            R("solidworks_sketch_spline", {"points": [{"x": 44.5, "y": 355}, {"x": 46, "y": 360}, {"x": 44.5, "y": 365}]}),
+            R("solidworks_sketch_point", {"x": 124, "y": 120}),
+            R("solidworks_sketch_centerline", {"x1": 124, "y1": 175, "x2": 124, "y2": 185}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        try:   # call_tool turns a raised exception into "❌ Error in ..." for the AI
+            prof = R("solidworks_sketch_profile", {"startX": 123.8, "startY": 67.4, "segments": [
+                {"type": "LINE", "x": 130, "y": 67.4}, {"type": "LINE", "x": 130, "y": 53.4},
+                {"type": "LINE", "x": 123.9, "y": 53.4}]})
+        except Exception as e:
+            prof = f"❌ {e}"
+        log(f"profile: {prof[:140]}")
+
+        sk = doc.SketchManager.ActiveSketch
+        arcs, lines, ellipses, splines = [], [], [], []
+        for s in prop(sk, "GetSketchSegments"):
+            t = prop(s, "GetType")
+            cons = bool(prop(s, "ConstructionGeometry"))
+            if t == 0:
+                lines.append((mm(prop(s, "GetStartPoint2")), mm(prop(s, "GetEndPoint2")), cons))
+            elif t == 1:
+                arcs.append((mm(prop(s, "GetCenterPoint2")), round(prop(s, "GetRadius") * 1000, 4), cons))
+            elif t == 2:
+                ellipses.append((mm(prop(s, "GetCenterPoint2")), mm(prop(s, "GetMajorPoint2")),
+                                 mm(prop(s, "GetMinorPoint2"))))
+            elif t == 3:
+                v = getattr(s, "GetPoints2")
+                seq = list(v() if callable(v) else v)
+                splines.append([mm(p) for p in seq] if not isinstance(seq[0], float)
+                               else [mm(seq[i:i + 2]) for i in range(0, len(seq), 3)])
+
+        def has_arc(c, r):
+            return any(near(a[0], c) and abs(a[1] - r) <= 1e-4 and not a[2] for a in arcs)
+
+        check("3-point arc: centre (39.75, 60), radius 7.25", has_arc((39.75, 60), 7.25),
+              f"{[a for a in arcs if a[0][1] < 100]}")
+        check("centre arc: centre (45.2, 120), radius 1.7", has_arc((45.2, 120), 1.7),
+              f"{[a for a in arcs if 100 < a[0][1] < 140]}")
+        poly = [l for l in lines if not l[2] and all(math.hypot(p[0] - 46, p[1] - 180) < 3 for p in l[:2])]
+        check("polygon: 6 sides, every vertex 2 mm from (46, 180)",
+              len(poly) == 6 and all(abs(math.hypot(p[0] - 46, p[1] - 180) - 2) <= 1e-4 for l in poly for p in l[:2]),
+              f"{len(poly)} sides near (46, 180)")
+        ell = [e for e in ellipses if 230 < e[0][1] < 250]
+        check("ellipse: centre (44.5, 240), radii 2 x 1 along X",
+              len(ell) == 1 and near(ell[0][0], (44.5, 240))
+              and abs(math.hypot(ell[0][1][0] - 44.5, ell[0][1][1] - 240) - 2) <= 1e-4
+              and abs(ell[0][1][1] - 240) <= 1e-4
+              and abs(math.hypot(ell[0][2][0] - 44.5, ell[0][2][1] - 240) - 1) <= 1e-4, f"{ell}")
+        check("slot: end arcs centred (46, 296)/(46, 304), radius 1.7",
+              has_arc((46, 296), 1.7) and has_arc((46, 304), 1.7),
+              f"{[a for a in arcs if 290 < a[0][1] < 310]}")
+        check("spline through (44.5, 355) (46, 360) (44.5, 365)",
+              any(len(s) == 3 and all(near(p, q) for p, q in zip(s, [(44.5, 355), (46, 360), (44.5, 365)]))
+                  for s in splines), f"{splines}")
+        pts = [mm(p) for p in prop(sk, "GetSketchPoints2")]
+        check("point at (124, 120)", any(near(p, (124, 120)) for p in pts),
+              f"{[p for p in pts if 118 < p[0] < 130 and 112 < p[1] < 128]}")
+        check("centerline (124, 175)-(124, 185)",
+              any(l[2] and {l[0], l[1]} == {(124.0, 175.0), (124.0, 185.0)} for l in lines),
+              f"{[l for l in lines if l[2]]}")
+        want_prof = [((123.8, 67.4), (130.0, 67.4)), ((130.0, 67.4), (130.0, 53.4)),
+                     ((130.0, 53.4), (123.9, 53.4)), ((123.9, 53.4), (123.8, 67.4))]
+        got_prof = [l for l in lines if not l[2] and all(p[0] > 123.6 and 50 < p[1] < 70 for p in l[:2])]
+        if prof.startswith("❌"):
+            check("profile refused and removed (no stray lines)", not got_prof, f"{got_prof}")
+        else:
+            check("profile drawn exactly",
+                  len(got_prof) == 4 and all(any({a, b} == {g[0], g[1]} for g in got_prof) for a, b in want_prof),
+                  f"{got_prof}")
+        check("snapping preference restored", sw.GetUserPreferenceToggle(249) == snap_before,
+              f"before {snap_before}, after {sw.GetUserPreferenceToggle(249)}")
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_sketch_snapping_tools FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "
