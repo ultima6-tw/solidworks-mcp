@@ -4,6 +4,16 @@ Control SolidWorks with plain language. This [Model Context Protocol](https://mo
 
 This is, as far as I can tell, the most complete MCP server for SolidWorks available, and I will be expanding as time allows.
 
+> **About this fork.** This is a maintained fork of
+> [HarrierPigeon/Solidworks-MCP-Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server)
+> by Joseph Robertson, who wrote the server and most of this README. It adds
+> support for localized (non-English) SOLIDWORKS, an [SSH mode](INSTALL.md#ssh-mode),
+> SOLIDWORKS CAM tools (stock → toolpaths → simulation → G-code), DXF export,
+> assembly bounding boxes, window screenshots, an opt-in `execute_python`, and
+> fixes found by testing every tool on SOLIDWORKS 2022 — see [Credits](#credits)
+> and [TESTING.md](TESTING.md). 繁體中文說明：[INSTALL.zh-TW.md](INSTALL.zh-TW.md)、
+> [TESTING.zh-TW.md](TESTING.zh-TW.md).
+
 The connected AI client gets a broad tool set covering sketching, solid features, assemblies with mates, configurations, equations, neutral-format import/export, and — critically — *feedback*: it can query faces and edges, check mass properties, detect interference, and take labeled screenshots of the model to see what it's actually building.
 
 ## What it can do
@@ -25,76 +35,28 @@ The connected AI client gets a broad tool set covering sketching, solid features
 ## Requirements
 
 - **Windows** (SolidWorks only runs on Windows)
-- **SolidWorks 2022 or later**, installed and activated (tested on SolidWorks 2025)
-- **Claude Desktop, Codex, or the ChatGPT desktop app** (other local MCP clients may also work with manual configuration)
+- **SolidWorks 2022 or later**, installed and activated. This fork is tested on SolidWorks 2022 SP04 with a Traditional Chinese interface; the original project was tested on SolidWorks 2025.
+- **Claude Desktop, Claude Code, Codex, or the ChatGPT desktop app** (other local MCP clients may also work with manual configuration)
+- **SOLIDWORKS CAM** only for the CAM tools
 
 That's it — the installer below takes care of Python and everything else.
 
 ## Installation
 
-### Easy install (recommended)
-
 Open **PowerShell** (press `Win`, type "PowerShell", press Enter) and paste:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/HarrierPigeon/Solidworks-MCP-Server/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ultima6-tw/solidworks-mcp/main/scripts/install.ps1 | iex"
 ```
 
-The script installs [uv](https://docs.astral.sh/uv/) (which provides Python — you don't need Python installed), downloads the latest release, and sets up an isolated environment under `%LOCALAPPDATA%\SolidWorksMCP`. It auto-detects Claude Desktop and Codex/ChatGPT desktop and registers the server with each confidently detected client.
+Before it downloads anything, the installer asks two questions:
 
-To choose explicitly, download the script and run one of:
+1. **Local or SSH?** Local (the default) is for an AI app running on the same Windows desktop as SolidWorks. SSH mode is for running the AI app over SSH; it has risks, listed on screen, and continues only if you type `ACCEPT`.
+2. **Enable `solidworks_execute_python`?** Default **no**. It would let the AI run any Python code on your computer, so it also needs `ACCEPT`.
 
-```powershell
-.\install.ps1 -Client Claude
-.\install.ps1 -Client Codex
-.\install.ps1 -Client Both
-```
+It then installs [uv](https://docs.astral.sh/uv/) (which provides Python — you don't need Python installed), downloads the latest release of this fork into `%LOCALAPPDATA%\SolidWorksMCP`, and registers the server with Claude Desktop, Claude Code and Codex / ChatGPT desktop — whichever it detects. Restart the AI app completely and ask it to *"create a 50mm cube in SolidWorks"*. To update or change your answers, run the same command again.
 
-Valid selections are `Auto` (the default), `Claude`, `Codex`, and `Both`. “Codex” covers the local Codex clients and ChatGPT desktop MCP configuration; it does not enable the hosted ChatGPT web app.
-
-Then restart the configured client completely and ask it to *"create a 50mm cube in SolidWorks"*.
-
-**To update later:** re-run the same one-liner.
-
-**To uninstall:** delete `%LOCALAPPDATA%\SolidWorksMCP`, remove the `"solidworks"` entry from `%APPDATA%\Claude\claude_desktop_config.json` if configured, and run `codex mcp remove solidworks` if configured for Codex.
-
-### Manual install (for developers)
-
-Prerequisites (in addition to the requirements above):
-
-- **[Python](https://www.python.org/downloads/) 3.10 or later** — check "Add python.exe to PATH" during install
-- **[Git](https://git-scm.com/downloads/win)** (or download the repo as a ZIP from GitHub instead)
-
-```powershell
-git clone https://github.com/HarrierPigeon/Solidworks-MCP-Server.git
-cd Solidworks-MCP-Server
-pip install -r requirements.txt
-```
-
-(Or `pip install -e .` for an editable package install.)
-
-> Tip: clone somewhere that isn't a network drive.
-
-For Claude Desktop, register the server in `%APPDATA%\Claude\claude_desktop_config.json` (Claude Desktop → Settings → Developer → Edit Config):
-
-```json
-{
-  "mcpServers": {
-    "solidworks": {
-      "command": "python",
-      "args": ["C:\\path\\to\\Solidworks-MCP-Server\\server.py"]
-    }
-  }
-}
-```
-
-For Codex and ChatGPT desktop, register it with:
-
-```powershell
-codex mcp add solidworks -- python C:\path\to\Solidworks-MCP-Server\server.py
-```
-
-Restart the configured client and you're set. (Microsoft Store installs of Claude Desktop keep its config under `%LOCALAPPDATA%\Packages\Claude...\LocalCache\Roaming\Claude` instead.)
+**[INSTALL.md](INSTALL.md)** has the details: SSH mode and its risks, what the `execute_python` switch does and does not protect against, unattended install parameters, manual install for developers, and uninstalling.
 
 ## Try it
 
@@ -245,6 +207,7 @@ Every tool is prefixed `solidworks_` (e.g. `solidworks_sketch_circle`). Dimensio
 | `get_vertices` | All vertex coordinates |
 | `find_face` | Select a face by *description*: orientation, creating feature, surface type, area rank |
 | `look_at_model` | Screenshot returned straight into the conversation, with face labels matching `get_faces` |
+| `screenshot` | The whole SolidWorks window as the user sees it (feature tree, PropertyManager, dialogs); other programs' windows on top are not captured |
 | `get_state` | Tracked session state + live model context (bounding box, sketch status, config, docs) |
 | `get_entity` / `get_sketch_entities` | Drill into any tracked object or sketch |
 
@@ -260,6 +223,7 @@ Every tool is prefixed `solidworks_` (e.g. `solidworks_sketch_circle`). Dimensio
 | `import_file` | Import STEP / IGES / Parasolid / ACIS / STL as a part, optionally running feature recognition |
 | `recognize_features` | Rebuild a parametric feature tree from an imported solid (FeatureWorks) so its dimensions can be driven |
 | `capture_views` | Export standard-view PNGs (isometric, front, top, ...) to disk |
+| `export_dxf` | Export one planar face (e.g. a plate's top face, with its holes) as a 2D DXF for laser / waterjet cutting, read back to report entities and extents |
 | `new_assembly` | New assembly document |
 | `insert_component` | Insert a saved part (first component is auto-fixed) |
 | `add_mate` | COINCIDENT, CONCENTRIC, PARALLEL, PERPENDICULAR, TANGENT, DISTANCE, ANGLE, LOCK, GEAR |
@@ -267,6 +231,32 @@ Every tool is prefixed `solidworks_` (e.g. `solidworks_sketch_circle`). Dimensio
 | `check_interference` | Overlap volumes + the components involved |
 | `suppress_component` / `list_components` / `list_mates` | Assembly management |
 | `get_assembly_mass_properties` | Assembly mass properties |
+| `get_assembly_bounding_box` | Overall size of the assembly plus each component's box (suppressed components excluded) |
+
+</details>
+
+<details>
+<summary><strong>SOLIDWORKS CAM (milling)</strong></summary>
+
+Run in this order; needs the SOLIDWORKS CAM add-in. Tested with SOLIDWORKS CAM 2022 on a simple milled part.
+
+| Tool | Description |
+|---|---|
+| `cam_setup` | Stock = the part's bounding box plus optional offsets per side; choose the post processor |
+| `cam_extract_features` | Find machinable features (pockets, bosses, holes, ...) |
+| `cam_generate_operations` | Operation plan from the technology database: tools, roughing / finishing, drilling |
+| `cam_generate_toolpath` | Toolpaths for every operation |
+| `cam_simulate` | Material-removal simulation: gouges, undercuts and the material left over; optionally plays it on screen and saves an image |
+| `cam_post` | G-code file (plus a `.set` tool list) from the chosen post processor, with a summary: line count, tool changes, X/Y/Z ranges |
+
+</details>
+
+<details>
+<summary><strong>Escape hatch (off by default)</strong></summary>
+
+| Tool | Description |
+|---|---|
+| `execute_python` | Run Python against the live SolidWorks session — only when no dedicated tool can do the job. **Not available unless enabled at install time**, because it can run any code on the computer; see [INSTALL.md](INSTALL.md#execute_python). |
 
 </details>
 
@@ -311,6 +301,7 @@ Claude  →  MCP tool call  →  server.py dispatch  →  solidworks/ module  �
 - The server connects to a running SolidWorks instance (or launches one) via COM (`pywin32`).
 - Every created object gets a **stable ID** (`feat:Boss-Extrude1`, `sketch:Sketch1`, `comp:bracket-1`) tracked per document, so Claude can refer back to things it built — even across multiple parts and an assembly in one session.
 - Tools return structured JSON, and geometry-query tools return coordinates that can be fed directly into selection-based tools (fillet this edge, sketch on that face).
+- In [SSH mode](INSTALL.md#ssh-mode), the server started by the AI app forwards each tool call to a bridge host running on the Windows desktop (`127.0.0.1` only, token-protected), because programs started over SSH cannot reach the desktop's SolidWorks.
 
 ## Troubleshooting
 
@@ -329,7 +320,7 @@ Claude  →  MCP tool call  →  server.py dispatch  →  solidworks/ module  �
 - `hole_wizard` can trigger a blocking SolidWorks dialog on some setups. The reliable fallback is a sketched circle + cut-extrude, which Claude will use if you ask.
 
 **Anything else**
-- Check `solidworks_mcp.log` next to `server.py` (easy install: `%LOCALAPPDATA%\SolidWorksMCP\app\`), then [open an issue](https://github.com/HarrierPigeon/Solidworks-MCP-Server/issues) with the relevant lines.
+- Check `solidworks_mcp.log` next to `server.py` (easy install: `%LOCALAPPDATA%\SolidWorksMCP\app\`), then [open an issue](https://github.com/ultima6-tw/solidworks-mcp/issues) with the relevant lines.
 
 ## Development
 
@@ -340,7 +331,7 @@ python dev_server.py      # hot-reload dev server (pip install watchdog)
 python clean.py           # close all open SolidWorks documents
 ```
 
-There is no mock of the COM layer — tests drive a real SolidWorks instance. `tests/agent_capability_tests.md` additionally contains 46 copy-paste prompts for end-to-end testing through Claude itself. Architecture notes live in [CLAUDE.md](CLAUDE.md).
+There is no mock of the COM layer — tests drive a real SolidWorks instance, and **the test runner closes every open document without saving**. `tests/agent_capability_tests.md` additionally contains 46 copy-paste prompts for end-to-end testing through Claude itself. What is tested, on which setup, and what is known to be unreliable: [TESTING.md](TESTING.md). Architecture notes live in [CLAUDE.md](CLAUDE.md).
 
 Contributions welcome — please open an issue or PR.
 
@@ -348,14 +339,23 @@ Contributions welcome — please open an issue or PR.
 
 - Drawing (2D drafting) generation isn't implemented yet.
 - `hole_wizard` may trigger a blocking dialog (see Troubleshooting).
-- Design-tree folders are **flat**, and a folder's membership has to be decided when you create it: SolidWorks rejects `MoveToFolder` for moving features into an existing folder, and folders can't be nested. `create_feature_folder` with the full feature list is the path that works.
+- Design-tree folders are **flat**: `create_feature_folder` cannot nest one folder in another yet (SOLIDWORKS 2022 can do it through `ReorderFeature`; the tool has not been switched over). Moving features into an existing folder works (`move_to_folder`).
+- `set_dimension_value` (picks a dimension by its position on screen) is unreliable — use `set_parameter` with the dimension's name. After `suppress_component`, the next assembly tool has sometimes reported that the active document is not an assembly. Details in [TESTING.md](TESTING.md).
+- This fork is tested only on SolidWorks 2022 SP04 with a Traditional Chinese interface.
 - `recognize_features` recovers a *partial* tree. On real mechanical parts it typically reconstructs holes, fillets and chamfers around a structural core it can't decompose, leaving the remainder in an `Imported<n>` body — so treat it as a head start, not a full parametric rebuild. It also needs SOLIDWORKS Professional or Premium.
 - WIDTH mates aren't implemented; component positioning is mate-driven (direct transform setting isn't available via late-bound COM).
 - no PDM / PDM Pro or 3DExperience (Enovia) awareness.  If you have extra PDM Pro licenses, or access to the Enovia API docs, please reach out!
 
+## Credits
+
+- **[Joseph Robertson](https://github.com/HarrierPigeon)** wrote the original [SolidWorks MCP Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server) — the server, nearly all of its tools, the test suite and the installer this fork builds on.
+- **[shuang943](https://github.com/shuang943)** contributed support for MCP 1.26 and localized SolidWorks (upstream PR #3, included here with its authorship).
+- `execute_python`, `screenshot`, `export_dxf` and `get_assembly_bounding_box` are ported from the tools of the same purpose in [alisamsam/solidworks-mcp](https://github.com/alisamsam/solidworks-mcp), reimplemented for this server.
+- This fork is maintained by [ultima6-tw](https://github.com/ultima6-tw), with code written together with Claude (Anthropic).
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — the original copyright notice is kept.
 
 ---
 
