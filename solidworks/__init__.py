@@ -19,6 +19,7 @@ from .assembly import AssemblyTools
 from .configurations import ConfigurationTools
 from .feature_tree import FeatureTreeTools
 from .cam import CamTools
+from .python_exec import PythonExecTools
 
 __all__ = [
     'SolidWorksConnection',
@@ -38,4 +39,5 @@ __all__ = [
     'ConfigurationTools',
     'FeatureTreeTools',
     'CamTools',
+    'PythonExecTools',
 ]

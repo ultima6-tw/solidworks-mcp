@@ -3437,6 +3437,57 @@ def test_assembly_bounding_box(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+@register_test("mcp_execute_python", "MCP Execute Python (opt-in)", "MCP Tools",
+               "Disabled by default: not listed, call refused. Enabled: reads a 40x30x20 box volume; an exception returns "
+               "its traceback and the server keeps working; long output truncated", order=45)
+def test_mcp_execute_python(sw, template):
+    from solidworks.python_exec import ENV_FLAG
+    saved_flag = os.environ.pop(ENV_FLAG, None)
+    server = None
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        def listed(srv):
+            return any(t.name == "solidworks_execute_python" for m in srv._modules for t in m.get_tool_definitions())
+
+        off = create_mcp_server()
+        check("disabled by default: not listed", not listed(off))
+        r = _call(off, "solidworks_execute_python", {"code": "result = 1"})
+        check("disabled: call refused with how to enable", not _mcp_ok(r) and ENV_FLAG in r, r[:90])
+
+        os.environ[ENV_FLAG] = "1"
+        server = create_mcp_server()
+        R = server._route_tool
+        check("enabled: listed", listed(server))
+        _box(server, 40, 30, 20)
+        p = _mcp_json(R("solidworks_execute_python", {"code":
+            "mp = doc.Extension.CreateMassProperty\nprint('title', doc.GetTitle)\nresult = round(mp.Volume * 1e9, 2)"}))
+        check("reads the box volume through COM", p["result"].startswith("✓") and p.get("value") == "24000.0"
+              and p["stdout"].startswith("title"), f"value={p.get('value')} stdout={p['stdout'].strip()!r}")
+        e = _mcp_json(R("solidworks_execute_python", {"code": "print('before')\nraise ValueError('boom')"}))
+        check("exception returns traceback + output so far", e["result"].startswith("❌") and "ValueError: boom" in e["traceback"]
+              and e["stdout"].strip() == "before", e["result"])
+        check("server still works after the exception", abs(_volume(server) - 24000) < 0.5)
+        t = _mcp_json(R("solidworks_execute_python", {"code": "print('x' * 30000)"}))
+        check("long output truncated", "[truncated" in t["stdout"] and len(t["stdout"]) < 21000, f"{len(t['stdout'])} chars")
+        return ok
+    except Exception as ex:
+        log(f"mcp_execute_python FAILED: {ex}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        if server is not None:
+            _call(server, "solidworks_close_document", {})
+        os.environ.pop(ENV_FLAG, None)
+        if saved_flag is not None:
+            os.environ[ENV_FLAG] = saved_flag
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

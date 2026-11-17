@@ -31,6 +31,7 @@ from solidworks import (
     ConfigurationTools,
     FeatureTreeTools,
     CamTools,
+    PythonExecTools,
 )
 
 # Configure logging
@@ -73,6 +74,7 @@ class SolidWorksMCPServer:
         self.configurations = ConfigurationTools(self.connection, self.tracker)
         self.feature_tree = FeatureTreeTools(self.connection, self.tracker)
         self.cam = CamTools(self.connection, self.tracker)
+        self.python_exec = PythonExecTools(self.connection, self.tracker)   # opt-in, listed only when enabled
 
         # All modules (order matters for tool listing)
         self._modules = [
@@ -91,6 +93,7 @@ class SolidWorksMCPServer:
             self.configurations,
             self.feature_tree,
             self.cam,
+            self.python_exec,
         ]
 
         # Build dispatch map: tool_name -> module
@@ -98,6 +101,9 @@ class SolidWorksMCPServer:
         for module in self._modules:
             for tool_def in module.get_tool_definitions():
                 self._route_map[tool_def.name] = module
+        # Not listed when disabled, but still routed so a direct call gets the
+        # module's explanation (how to enable it) instead of 'Unknown tool'.
+        self._route_map.setdefault("solidworks_execute_python", self.python_exec)
 
         self.setup_handlers()
 

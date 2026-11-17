@@ -157,6 +157,19 @@ def main(argv=None):
                             encoding="utf-8")
     print(f"SolidWorks MCP bridge host listening on 127.0.0.1:{port} "
           f"(session {sid}, pid {os.getpid()}). Keep this window open; Ctrl+C to stop.")
+    from solidworks.python_exec import ENV_FLAG, python_enabled
+    if python_enabled():
+        print("
+" + "!" * 72 + f"
+  WARNING: solidworks_execute_python is ENABLED ({ENV_FLAG}=1).
+"
+              "  Any client that reaches this host (e.g. an AI agent over SSH) can run
+"
+              "  arbitrary Python on THIS computer with this Windows user's rights.
+"
+              "  Every snippet is logged to solidworks_mcp.log.
+" + "!" * 72 + "
+")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
