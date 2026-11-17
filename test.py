@@ -3729,6 +3729,50 @@ def test_mcp_sketch_snapping(sw, template):
         return False
 
 
+@register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
+               "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
+               "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "
+               "unchanged", order=49)
+def test_mcp_extrusion_error(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+        for name, args in [("solidworks_new_part", {}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_rectangle", {"width": 40, "height": 30, "centerX": 0, "centerY": 0}),
+                           ("solidworks_create_extrusion", {"depth": 10}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_rectangle", {"width": 10, "height": 10, "centerX": 60, "centerY": 0})]:
+            _mcp_json(R(name, args))
+        try:   # call_tool turns a raised exception into "❌ Error in ..." for the AI
+            r = R("solidworks_create_extrusion", {"depth": 10, "endCondition": "THROUGH_ALL", "reverse": True})
+        except Exception as e:
+            r = f"❌ {e}"
+        check("away-from-body THROUGH_ALL boss reported as an error", r.startswith("❌") and "31" in r, r[:160])
+        doc = sw.ActiveDoc
+        names = [f.Name for f in (doc.FeatureManager.GetFeatures(True) or [])]
+        check("the feature in error was removed",
+              not any(n in ("Boss-Extrude2", "填料-伸長2") for n in names), f"{names[-4:]}")
+        tree = _mcp_json(R("solidworks_get_feature_tree", {}))
+        sketches = [t["name"] for t in tree["tree"] if t.get("type") == "ProfileFeature"]
+        check("its sketch is kept", len(sketches) == 1, f"{sketches}")
+        vol = _mcp_json(R("solidworks_get_mass_properties", {}))["volume_mm3"]
+        check("body unchanged: 40 x 30 x 10", abs(vol - 12000) < 0.5, f"{vol:.2f}")
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_extrusion_error FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

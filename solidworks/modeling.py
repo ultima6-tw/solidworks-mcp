@@ -11,6 +11,25 @@ from mcp.types import Tool
 from typing import Any
 from .com_utils import com_prop, exit_active_sketch
 
+
+def _feature_error_code(feat) -> int:
+    """swFeatureError_e of a feature (0 = no error). GetErrorCode2 takes a
+    BYREF BOOL for the warning flag (plain bool raises Type mismatch)."""
+    try:
+        warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BOOL, False)
+        return int(feat.GetErrorCode2(warn) or 0)
+    except Exception:
+        return 0
+
+
+def _delete_feature_only(doc, feat):
+    """Delete one feature; its absorbed sketch stays (DeleteSelection2 option
+    0 -- swDelete_Absorbed = 2 would take the sketch too)."""
+    doc.ClearSelection2(True)
+    feat.Select2(False, 0)
+    doc.Extension.DeleteSelection2(0)
+    doc.ClearSelection2(True)
+
 logger = logging.getLogger(__name__)
 
 MATERIAL_DATABASE = "SOLIDWORKS Materials"
@@ -384,6 +403,22 @@ class ModelingTools:
         if not feature:
             raise Exception("Failed to create extrusion")
 
+        # A feature can come back in error instead of None: probed on SW2022,
+        # a Through-All boss pointing away from every body returns a feature in
+        # swFeatureErrorExtrusionNoEndFound (31) that added nothing. Unlike a
+        # cut there is no "right" direction to retry in (it would put material
+        # where nobody asked), so delete it -- the sketch stays -- and report.
+        code = _feature_error_code(feature)
+        if code:
+            _delete_feature_only(doc, feature)
+            hint = (" A THROUGH_ALL extrusion needs an existing body in that direction; "
+                    "use BLIND or the other direction (reverse)."
+                    if end_type == 1 else "")
+            raise Exception(
+                f"Extrusion failed: SolidWorks created the feature in error "
+                f"swFeatureError_e {code} and it was removed (the sketch "
+                f"'{sketch_name}' is kept).{hint}")
+
         feature_name = feature.Name
         doc.ViewZoomtofit2()
 
@@ -474,20 +509,7 @@ class ModelingTools:
         # Through-All cut pointing away from the body comes back as a feature
         # in error swFeatureErrorExtrusionNoEndFound (31) that removed nothing.
         # So a feature in error counts as a failed attempt too: delete it (the
-        # absorbed sketch stays, DeleteSelection2 option 0) and try the other way.
-        def _error_code(feat):
-            try:
-                warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BOOL, False)
-                return int(feat.GetErrorCode2(warn) or 0)
-            except Exception:
-                return 0
-
-        def _discard(feat):
-            doc.ClearSelection2(True)
-            feat.Select2(False, 0)
-            doc.Extension.DeleteSelection2(0)
-            doc.ClearSelection2(True)
-
+        # absorbed sketch stays) and try the other way.
         errors = []
         flipped_note = ""
         feature = None
@@ -496,11 +518,11 @@ class ModelingTools:
             if not feat:
                 errors.append("no feature returned")
                 continue
-            code = _error_code(feat)
+            code = _feature_error_code(feat)
             if code:
                 errors.append(f"swFeatureError_e {code}")
                 logger.info(f"Cut-extrusion attempt {attempt + 1} is in error {code}; discarding it")
-                _discard(feat)
+                _delete_feature_only(doc, feat)
                 continue
             feature = feat
             if attempt:

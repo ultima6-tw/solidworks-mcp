@@ -57,14 +57,14 @@ python test.py                              # everything
 
 ## What is covered
 
-81 tests in 6 categories (`python test.py --list` for the full list):
+82 tests in 6 categories (`python test.py --list` for the full list):
 
 | Category | Tests | What they check |
 |---|---|---|
 | Basic | 2 | Every `.py` file compiles and the bridge modules import (no SOLIDWORKS needed); a cube built end to end |
 | Sketch Tools | 12 | Each sketch entity, dimensions, constraints, construction geometry |
 | Feature Tools | 9 | Cut-extrude, fillet, chamfer, shell, revolve, loft, reference plane, mass properties, feature list |
-| MCP Tools | 49 | The tools as an AI calls them (through the server's tool router), with the results checked against expected geometry, volumes, IDs and files. One of them (`mcp_stdio_transport`) starts `server.py` as a real MCP stdio server and sends the calls through the pipe, because a hang that only happens over stdio cannot show up in the others |
+| MCP Tools | 50 | The tools as an AI calls them (through the server's tool router), with the results checked against expected geometry, volumes, IDs and files. One of them (`mcp_stdio_transport`) starts `server.py` as a real MCP stdio server and sends the calls through the pipe, because a hang that only happens over stdio cannot show up in the others |
 | Assembly | 8 | Save / activate / close documents, inserting components, mates, interference and suppression, per-document state, parametric changes, bounding box |
 | Integration | 1 | A longer sequence of cut-extrudes on one body |
 
@@ -81,11 +81,11 @@ On the setup above, every test does, with the two exceptions below.
 The last full run (`python test.py`, 73 tests at the time) passed 70. The 3
 failures were different from the previous full run's, and those tests passed
 when run on their own. All of them involved picking geometry by coordinates or
-"the active document". We have not found the cause. The 8 tests added since
+"the active document". We have not found the cause. The 9 tests added since
 then (`code_compiles`, `mcp_cam_flow`, `mcp_export_dxf`,
 `assembly_bounding_box`, `mcp_execute_python`, `mcp_screenshot`,
-`mcp_stdio_transport`, `mcp_sketch_snapping`) each pass on their own; the full 81
-have not been run in one go yet.
+`mcp_stdio_transport`, `mcp_sketch_snapping`, `mcp_extrusion_error`) each pass on
+their own; the full 82 have not been run in one go yet.
 
 Known unreliable even on their own (the tool descriptions tell the AI the same):
 
