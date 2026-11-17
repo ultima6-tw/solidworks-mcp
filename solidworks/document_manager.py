@@ -251,6 +251,23 @@ class DocumentManagerTools:
                 },
             ),
             Tool(
+                name="solidworks_screenshot",
+                description="Screenshot of the SOLIDWORKS main window exactly as the user sees it — feature tree, PropertyManager panels "
+                            "(e.g. a running SOLIDWORKS CAM simulation), toolbars and the graphics area — returned as an image. Use it to "
+                            "check UI state; for a clean model picture with face labels use look_at_model instead. Only the SOLIDWORKS "
+                            "window is captured (PrintWindow): windows of other programs on top of it are NOT included. The image may "
+                            "show other open documents' names; it is sent to the AI service. Fails if the window is minimized. "
+                            "Tested on SOLIDWORKS 2022 SP04.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "maxWidth": {"type": "integer", "description": "Downscale to at most this width in pixels (default 1600)"},
+                        "outputPath": {"type": "string",
+                                       "description": "PNG path; default workspace/screenshots/solidworks_window_<time>.png"},
+                    },
+                },
+            ),
+            Tool(
                 name="solidworks_capture_views",
                 description="Export standard-view screenshots (PNG) of the active document. Each view is oriented (ShowNamedView2), zoomed to fit, and saved. Returns the file paths.",
                 inputSchema={
@@ -297,6 +314,7 @@ class DocumentManagerTools:
             "solidworks_close_document": lambda: self.close_document(args),
             "solidworks_capture_views": lambda: self.capture_views(args),
             "solidworks_export_dxf": lambda: self.export_dxf(args),
+            "solidworks_screenshot": lambda: self.screenshot(args),
             "solidworks_list_documents": lambda: self.list_documents(),
         }
         handler = dispatch.get(tool_name)
@@ -867,6 +885,59 @@ class DocumentManagerTools:
             f"✓ DXF exported: {raw}" + (f" ({info.get('circleCount', 0)} circle(s), units {info.get('units')})" if "units" in info else ""),
             path=str(raw), faceNormal=r3(n), dxfX_model=r3(u), dxfY_model=r3(v),
             origin_mm=[round(c * 1000, 3) for c in origin], **info, type="dxf_export")
+
+    def screenshot(self, args: dict) -> str:
+        """PrintWindow(PW_RENDERFULLCONTENT) of ISldWorks.Frame().GetHWnd.
+        Probed on SW2022: renders the OpenGL view too, and with another window
+        on top it still returns SOLIDWORKS' own pixels (0 of 350000 pixels of
+        a red cover window), whereas a screen grab of the same rectangle
+        returned the cover window."""
+        import ctypes
+        import time
+        import win32gui
+        import win32ui
+        from PIL import Image, ImageStat
+
+        hwnd = com_prop(com_prop(self.connection.app, "Frame"), "GetHWnd")
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            raise Exception("Could not find the SOLIDWORKS main window")
+        if win32gui.IsIconic(hwnd):
+            raise Exception("The SOLIDWORKS window is minimized — restore it first (nothing is captured while minimized)")
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        w, h = right - left, bottom - top
+        hdc = win32gui.GetWindowDC(hwnd)
+        mdc = win32ui.CreateDCFromHandle(hdc)
+        sdc = mdc.CreateCompatibleDC()
+        bmp = win32ui.CreateBitmap()
+        try:
+            bmp.CreateCompatibleBitmap(mdc, w, h)
+            sdc.SelectObject(bmp)
+            ok = ctypes.windll.user32.PrintWindow(hwnd, sdc.GetSafeHdc(), 2)   # PW_RENDERFULLCONTENT
+            info = bmp.GetInfo()
+            img = Image.frombuffer("RGB", (info["bmWidth"], info["bmHeight"]), bmp.GetBitmapBits(True), "raw", "BGRX", 0, 1)
+        finally:
+            win32gui.DeleteObject(bmp.GetHandle())
+            sdc.DeleteDC()
+            mdc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hdc)
+        if not ok or ImageStat.Stat(img.convert("L")).stddev[0] < 1:
+            raise Exception("PrintWindow returned no picture — this process may not be on the interactive desktop "
+                            "(over SSH use the desktop bridge host, see bridge/host.py)")
+        max_w = int(args.get("maxWidth") or 1600)
+        if img.width > max_w:
+            img = img.resize((max_w, round(img.height * max_w / img.width)), Image.LANCZOS)
+        if args.get("outputPath"):
+            png = Path(args["outputPath"])
+            if not png.is_absolute():
+                png = WORKSPACE_DIR / "screenshots" / png
+            png = png.with_suffix(".png")
+        else:
+            png = WORKSPACE_DIR / "screenshots" / time.strftime("solidworks_window_%Y%m%d_%H%M%S.png")
+        png.parent.mkdir(parents=True, exist_ok=True)
+        img.save(png)
+        return "IMAGE_FILE:" + str(png) + "\n" + self._json_result(
+            f"✓ SOLIDWORKS window captured ({img.width}x{img.height})",
+            path=str(png), size=[img.width, img.height], window=[w, h], type="screenshot")
 
     def capture_views(self, args: dict) -> str:
         doc = self.connection.get_active_doc()

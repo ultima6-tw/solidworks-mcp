@@ -3488,6 +3488,64 @@ def test_mcp_execute_python(sw, template):
             os.environ[ENV_FLAG] = saved_flag
 
 
+@register_test("mcp_screenshot", "MCP Screenshot (SOLIDWORKS window only)", "MCP Tools",
+               "Image content returned and saved; default and custom maxWidth; a red window placed on top of SOLIDWORKS "
+               "does not appear in the capture", order=46)
+def test_mcp_screenshot(sw, template):
+    from PIL import Image
+    server = create_mcp_server()
+    R = server._route_tool
+    out = tempfile.mkdtemp(prefix="swmcp_shot_test_")   # left in %TEMP%; never deleted by the test
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        _box(server, 40, 30, 20)
+        items = server.handle_call("solidworks_screenshot", {"outputPath": os.path.join(out, "full.png")})
+        kinds = [i.type for i in items]
+        check("image + text content returned", kinds == ["image", "text"], f"{kinds}")
+        r = json.loads(items[-1].text)
+        img = Image.open(r["path"])
+        check("PNG saved, width <= 1600, window aspect kept", img.width <= 1600
+              and abs(img.width / img.height - r["window"][0] / r["window"][1]) < 0.01, f"{img.size} window {r['window']}")
+
+        def shot(args):
+            return _mcp_json(R("solidworks_screenshot", args).split("\n", 1)[1])   # after the IMAGE_FILE: line
+
+        r = shot({"maxWidth": 800, "outputPath": os.path.join(out, "small")})
+        check("maxWidth 800, .png added", Image.open(r["path"]).width == 800 and r["path"].endswith("small.png"), r["path"])
+
+        import tkinter as tk
+        root = tk.Tk()
+        root.geometry("600x400+400+250")
+        root.configure(bg="#ff0000")
+        root.attributes("-topmost", True)
+        root.update()
+        time.sleep(1.0)
+        root.update()
+        try:
+            r = shot({"maxWidth": 4000, "outputPath": os.path.join(out, "covered.png")})
+        finally:
+            root.destroy()
+        import win32gui
+        from solidworks.com_utils import com_prop
+        wl, wt = win32gui.GetWindowRect(com_prop(com_prop(server.connection.app, "Frame"), "GetHWnd"))[:2]
+        cov = Image.open(r["path"]).convert("RGB").crop((400 - wl, 250 - wt, 1000 - wl, 650 - wt))
+        red = sum(1 for p in cov.getdata() if p[0] > 200 and p[1] < 60 and p[2] < 60)
+        check("window on top of SOLIDWORKS not captured", red == 0, f"{red} red pixels in the covered area")
+        return ok
+    except Exception as e:
+        log(f"mcp_screenshot FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
