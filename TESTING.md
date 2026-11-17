@@ -57,11 +57,11 @@ python test.py                              # everything
 
 ## What is covered
 
-85 tests in 6 categories (`python test.py --list` for the full list):
+86 tests in 6 categories (`python test.py --list` for the full list):
 
 | Category | Tests | What they check |
 |---|---|---|
-| Basic | 2 | Every `.py` file compiles and the bridge modules import (no SOLIDWORKS needed); a cube built end to end |
+| Basic | 3 | Every `.py` file compiles and the bridge modules import, and the start-up update check behaves (both without SOLIDWORKS); a cube built end to end |
 | Sketch Tools | 12 | Each sketch entity, dimensions, constraints, construction geometry |
 | Feature Tools | 9 | Cut-extrude, fillet, chamfer, shell, revolve, loft, reference plane, mass properties, feature list |
 | MCP Tools | 53 | The tools as an AI calls them (through the server's tool router), with the results checked against expected geometry, volumes, IDs and files. One of them (`mcp_stdio_transport`) starts `server.py` as a real MCP stdio server and sends the calls through the pipe, because a hang that only happens over stdio cannot show up in the others |
@@ -84,7 +84,8 @@ the same test functions but, unlike `python test.py`, does not close documents
 that were open before the run. An earlier `python test.py` run (73 tests at the
 time) passed 70; its 3 failures differed from the run before and passed on their
 own. They involved picking geometry by coordinates or "the active document"; the
-cause was never found and they did not come back in the 85/85 run.
+cause was never found and they did not come back in the 85/85 run. `update_check`
+was added after that run and passes on its own.
 
 Known unreliable even on their own (the tool descriptions tell the AI the same):
 

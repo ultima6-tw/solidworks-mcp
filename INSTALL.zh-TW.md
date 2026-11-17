@@ -171,6 +171,20 @@ Python 程式碼。它能做到專用工具做不到的事，但不限於 SOLIDW
 **如果某個工具呼叫一直沒有回應**，看 `solidworks_mcp.log`：如果最後一行是那個工具被呼叫，
 先看桌面上有沒有 SOLIDWORKS 的對話框。SSH 模式還要確認 bridge host 的視窗開著。
 
+## 更新
+
+沒有自動更新。改了什麼、哪些更新比較重要，見 [CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md)。
+
+- **怎麼知道有更新**：server 啟動時會在背景問 GitHub 一次，你這份所在的分支上，有沒有你這份還沒有的
+  commit。有的話，這次使用的第一個工具回傳會附上一則提醒（`ℹ Update available …`）；請轉告使用者。
+  這個檢查只送出一個不需登入的公開 GitHub API 查詢（`/repos/<owner>/<repo>/compare/<你的 commit>...<分支>`，
+  User-Agent 用通用名稱），不會送出任何跟使用者、電腦或文件有關的資料。幾秒內沒回應就放棄，不會拖慢
+  啟動；只對 git 下載的程式碼有效（下載 ZIP 的沒有 commit 可以比對）。本機有 GitHub 上沒有的 commit 時，
+  不會提醒。
+- **關掉檢查**：在 server 的環境變數（登記設定裡的 `env`）設定 `SOLIDWORKS_MCP_UPDATE_CHECK=0`。
+- **更新方式**：在程式碼資料夾執行 `git pull`，再重新啟動 MCP server（重開 AI 程式或它的 MCP 連線）。
+  SSH 模式還要重開桌面上的 bridge host。如果 `requirements.txt` 有變，要再安裝一次到同一個虛擬環境。
+
 ## 解除安裝
 
 1. 移除登記：`claude mcp remove solidworks -s user`、`codex mcp remove solidworks`，或刪掉

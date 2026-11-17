@@ -346,6 +346,111 @@ def make_cube(sw, template, size_mm=100):
 # TEST FUNCTIONS — Basic
 # ===========================================================================
 
+@register_test("update_check", "Start-up Update Check", "Basic",
+               "update_check against a stand-in GitHub (no network): reads the local commit from .git, a "
+               "'gitdir:' file and packed-refs; reports new commits once; stays quiet when up to date, when "
+               "GitHub does not know the commit (404), when GitHub cannot be reached, for a non-GitHub origin "
+               "and with SOLIDWORKS_MCP_UPDATE_CHECK=0; does not use SOLIDWORKS", order=0)
+def test_update_check(sw, template):
+    import importlib
+    import urllib.error
+    uc = importlib.import_module("solidworks.update_check")
+    ok = True
+
+    def check(label, cond, detail=""):
+        nonlocal ok
+        log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+        ok = ok and bool(cond)
+
+    sha = "a" * 40
+    base = tempfile.mkdtemp(prefix="swmcp_update_test_")   # left in %TEMP%; never deleted by the test
+
+    def make_repo(name, layout, url="https://github.com/someone/solidworks-mcp.git"):
+        root = os.path.join(base, name)
+        gd = os.path.join(root, ".git" if layout != "gitdir" else ".git.nosync")
+        os.makedirs(os.path.join(gd, "refs", "heads"))
+        with open(os.path.join(gd, "HEAD"), "w") as f:
+            f.write("ref: refs/heads/main\n")
+        if layout == "packed":
+            with open(os.path.join(gd, "packed-refs"), "w") as f:
+                f.write("# pack-refs with: peeled\n" + sha + " refs/heads/main\n")
+        else:
+            with open(os.path.join(gd, "refs", "heads", "main"), "w") as f:
+                f.write(sha + "\n")
+        with open(os.path.join(gd, "config"), "w") as f:
+            f.write(f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {url}\n')
+        if layout == "gitdir":
+            with open(os.path.join(root, ".git"), "w") as f:
+                f.write("gitdir: .git.nosync\n")
+        return root
+
+    asked = []
+
+    def ahead(url):
+        asked.append(url)
+        return {"status": "ahead", "ahead_by": 3}
+
+    saved = {k: os.environ.pop(k, None) for k in ("SOLIDWORKS_MCP_UPDATE_CHECK", "SOLIDWORKS_MCP_UPDATE_REPO")}
+    try:
+        for layout in ("dir", "gitdir", "packed"):
+            root = make_repo(layout, layout)
+            check(f"local commit from {layout} layout", uc.local_head(root) == (sha, "main"), f"{uc.local_head(root)}")
+        root = os.path.join(base, "dir")
+        n = uc.check_for_update(root, fetch=ahead)
+        check("3 new commits reported", n is not None and "3 commit(s)" in n and "git pull" in n, (n or "None")[:120])
+        check("asks GitHub compare <local>...<branch> of the origin repo",
+              asked[-1] == f"https://api.github.com/repos/someone/solidworks-mcp/compare/{sha}...main", asked[-1])
+        check("up to date: quiet", uc.check_for_update(root, fetch=lambda u: {"status": "identical", "ahead_by": 0}) is None)
+        check("local ahead of GitHub: quiet",
+              uc.check_for_update(root, fetch=lambda u: {"status": "behind", "ahead_by": 0}) is None)
+
+        def not_found(u):
+            raise urllib.error.HTTPError(u, 404, "Not Found", {}, None)
+
+        def offline(u):
+            raise OSError("network unreachable")
+
+        check("commit unknown to GitHub (404): quiet", uc.check_for_update(root, fetch=not_found) is None)
+        check("GitHub unreachable: quiet, no exception", uc.check_for_update(root, fetch=offline) is None)
+        other = make_repo("gitlab", "dir", url="https://gitlab.com/x/y.git")
+        asked.clear()
+        check("origin not on GitHub: quiet, nothing sent", uc.check_for_update(other, fetch=ahead) is None and not asked)
+        check("not a git checkout: quiet", uc.check_for_update(base, fetch=ahead) is None)
+        os.environ["SOLIDWORKS_MCP_UPDATE_CHECK"] = "0"
+        asked.clear()
+        check("SOLIDWORKS_MCP_UPDATE_CHECK=0: quiet, nothing sent", uc.check_for_update(root, fetch=ahead) is None and not asked)
+        os.environ.pop("SOLIDWORKS_MCP_UPDATE_CHECK")
+        uc._state.update(notice="x", shown=False)
+        check("notice handed out once", uc.take_notice() == "x" and uc.take_notice() is None)
+
+        # Through the MCP call_tool handler: the notice rides along as an extra
+        # text item on the first call only.
+        import asyncio
+        from mcp.types import CallToolRequest, CallToolRequestParams
+        server = create_mcp_server()
+        handler = server.server.request_handlers[CallToolRequest]
+
+        def texts():
+            req = CallToolRequest(method="tools/call",
+                                  params=CallToolRequestParams(name="solidworks_get_state", arguments={}))
+            res = asyncio.run(handler(req))
+            return [c.text for c in res.root.content if getattr(c, "type", "") == "text"]
+
+        uc._state.update(notice="Update available: test", shown=False)
+        first, second = texts(), texts()
+        check("call_tool: first result carries the notice as an extra item",
+              len(first) == 2 and first[1] == "ℹ Update available: test", f"{[t[:40] for t in first]}")
+        check("call_tool: second result does not", len(second) == 1, f"{[t[:40] for t in second]}")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        uc._state.update(notice=None, shown=False)
+    return ok
+
+
 @register_test("code_compiles", "All Python Files Compile", "Basic",
                "Every .py file of the project compiles and the bridge modules import (catches files that "
                "no other test loads, e.g. bridge/host.py); does not use SOLIDWORKS", order=-1)

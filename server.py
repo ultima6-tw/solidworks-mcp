@@ -14,6 +14,7 @@ from pathlib import Path
 import pythoncom
 
 from solidworks.feature_errors import check_new_features, describe, feature_names
+from solidworks import update_check
 from solidworks.com_utils import com_prop
 from solidworks import (
     SolidWorksConnection,
@@ -164,8 +165,15 @@ class SolidWorksMCPServer:
                 # (e.g. over SSH), so never touch COM here — forward the call
                 # to bridge/host.py running on the interactive desktop.
                 logger.info(f"Tool called (via bridge): {name}")
-                return await asyncio.to_thread(self.bridge.call_tool, name, arguments)
-            return self.handle_call(name, arguments)
+                content = await asyncio.to_thread(self.bridge.call_tool, name, arguments)
+            else:
+                content = self.handle_call(name, arguments)
+            # One-time "update available" notice from the start-up check
+            # (solidworks/update_check.py), as an extra text item.
+            notice = update_check.take_notice()
+            if notice:
+                content = list(content) + [TextContent(type="text", text="ℹ " + notice)]
+            return content
 
     def handle_call(self, name: str, arguments: Any) -> list:
         """Run one tool call against SolidWorks and return MCP content items.
@@ -308,6 +316,7 @@ async def main():
     if bridge is not None:
         logger.info(f"Bridge mode: forwarding tool calls to {bridge.describe()}")
     server = SolidWorksMCPServer(bridge=bridge)
+    update_check.start(str(Path(__file__).resolve().parent))
 
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.server.run(

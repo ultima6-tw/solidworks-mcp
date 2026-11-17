@@ -213,6 +213,27 @@ These checks are enough. The project itself has already been tested (see
 the tool being called, look on the desktop for a SOLIDWORKS dialog. In SSH mode,
 check that the bridge host window is open.
 
+## Updates
+
+There is no automatic update. What changed, and which updates matter, is in
+[CHANGELOG.md](CHANGELOG.md).
+
+- **How you find out**: when the server starts it asks GitHub once, in the
+  background, whether the branch your copy is on has commits your copy does not
+  have. If so, the first tool result of the session carries a note saying so
+  (`ℹ Update available …`); tell the person. The check sends one unauthenticated
+  request to the public GitHub API (`/repos/<owner>/<repo>/compare/<your commit>...<branch>`,
+  generic User-Agent) and nothing about the person, the machine or the documents.
+  It gives up after a few seconds, never delays start-up, and only works for a
+  git checkout (a downloaded ZIP has no commit to compare). Copies with local
+  commits that are not on GitHub are not reported.
+- **Turn the check off**: set `SOLIDWORKS_MCP_UPDATE_CHECK=0` in the server's
+  environment (the `env` of its registration).
+- **Update**: `git pull` in the folder with the code, then restart the MCP server
+  (restart the AI app or its MCP connection). In SSH mode also restart the bridge
+  host on the desktop. If `requirements.txt` changed, install it again into the
+  same virtual environment.
+
 ## Uninstall
 
 1. Remove the registration: `claude mcp remove solidworks -s user`,

@@ -11,8 +11,9 @@ This is, as far as I can tell, the most complete MCP server for SolidWorks avail
 > SOLIDWORKS CAM tools (stock → toolpaths → simulation → G-code), DXF export,
 > assembly bounding boxes, window screenshots, an opt-in `execute_python`, and
 > fixes found by testing every tool on SOLIDWORKS 2022 — see [Credits](#credits)
-> and [TESTING.md](TESTING.md). 繁體中文說明：[INSTALL.zh-TW.md](INSTALL.zh-TW.md)、
-> [TESTING.zh-TW.md](TESTING.zh-TW.md).
+> and [TESTING.md](TESTING.md). What changed: [CHANGELOG.md](CHANGELOG.md).
+> 繁體中文說明：[INSTALL.zh-TW.md](INSTALL.zh-TW.md)、[TESTING.zh-TW.md](TESTING.zh-TW.md)、
+> [CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md).
 
 The connected AI client gets a broad tool set covering sketching, solid features, assemblies with mates, configurations, equations, neutral-format import/export, and — critically — *feedback*: it can query faces and edges, check mass properties, detect interference, and take labeled screenshots of the model to see what it's actually building.
 
