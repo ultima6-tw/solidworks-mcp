@@ -166,6 +166,18 @@ class AssemblyTools:
                 }
             ),
             Tool(
+                name="solidworks_get_assembly_bounding_box",
+                description="Overall bounding box of the active assembly in assembly coordinates (mm): min, max and size — e.g. to size an "
+                            "enclosure around a board stack. Also lists each component's box (perComponent, default true). "
+                            "Suppressed components are not included. For a single part use get_body_info. Tested on SOLIDWORKS 2022 SP04.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "perComponent": {"type": "boolean", "description": "Include each component's box (default true)"},
+                    },
+                },
+            ),
+            Tool(
                 name="solidworks_list_components",
                 description="List all components in the active assembly: IDs, file paths, origin positions (mm), fixed and suppression status.",
                 inputSchema={"type": "object", "properties": {}}
@@ -238,6 +250,7 @@ class AssemblyTools:
             "solidworks_insert_component": lambda: self.insert_component(args),
             "solidworks_add_mate": lambda: self.add_mate(args),
             "solidworks_list_components": lambda: self.list_components(),
+            "solidworks_get_assembly_bounding_box": lambda: self.get_assembly_bounding_box(args),
             "solidworks_list_mates": lambda: self.list_mates(),
             "solidworks_edit_mate": lambda: self.edit_mate(args),
             "solidworks_check_interference": lambda: self.check_interference(),
@@ -524,6 +537,34 @@ class AssemblyTools:
             **({"value": value} if value is not None else {}),
             type="mate",
         )
+
+    def get_assembly_bounding_box(self, args: dict) -> str:
+        """IAssemblyDoc.GetBox(0) and IComponent2.GetBox(False, False), both in
+        metres. Probed on SW2022: exact for two 50 mm cubes, no temporary part
+        needed (the old alisamsam server converted the assembly to a part)."""
+        asm = self._get_assembly_doc()
+        asm.ForceRebuild3(True)
+        b = asm.GetBox(0)
+        if not b:
+            raise Exception("GetBox returned nothing — is the assembly empty?")
+        lo = [round(v * 1000, 3) for v in b[:3]]
+        hi = [round(v * 1000, 3) for v in b[3:6]]
+        extra = {"min_mm": lo, "max_mm": hi, "size_mm": [round(h - l, 3) for l, h in zip(lo, hi)]}
+        if args.get("perComponent", True):
+            comps = []
+            for c in (asm.GetComponents(True) or []):
+                try:
+                    if c.IsSuppressed():
+                        continue
+                except Exception:
+                    pass
+                cb = c.GetBox(False, False)
+                if cb:
+                    comps.append({"name": c.Name2, "min_mm": [round(v * 1000, 3) for v in cb[:3]],
+                                  "max_mm": [round(v * 1000, 3) for v in cb[3:6]]})
+            extra["components"] = sorted(comps, key=lambda d: d["name"])
+        s = extra["size_mm"]
+        return self._json_result(f"✓ Assembly bounding box {s[0]} x {s[1]} x {s[2]} mm", type="assembly_bbox", **extra)
 
     def list_components(self) -> str:
         asm = self._get_assembly_doc()

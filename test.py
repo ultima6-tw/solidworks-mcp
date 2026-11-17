@@ -3387,6 +3387,56 @@ def test_mcp_export_dxf(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+@register_test("assembly_bounding_box", "Assembly Bounding Box", "Assembly",
+               "Two 50 mm cubes (second dropped at x=200) + Ø20x30 cylinder at y=100: overall and per-component boxes; "
+               "suppressed cylinder drops out", order=9)
+def test_assembly_bounding_box(sw, template):
+    d = tempfile.mkdtemp(prefix="swmcp_asm_bbox_")   # left in %TEMP%; never deleted by the test
+    server = create_mcp_server()
+    R = server._route_tool
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        cube = mcp_build_and_save_box(server, os.path.join(d, "bbox_cube"), 50)
+        cyl = mcp_build_and_save_cylinder(server, os.path.join(d, "bbox_cyl"), 10, 30)
+        _mcp_json(R("solidworks_new_assembly", {}))
+        _mcp_json(R("solidworks_insert_component", {"path": cube}))
+        _mcp_json(R("solidworks_insert_component", {"path": cube, "x": 200, "y": 0, "z": 0}))
+        cyl_id = _mcp_json(R("solidworks_insert_component", {"path": cyl, "x": 0, "y": 100, "z": 0}))["id"]
+
+        b = _mcp_json(R("solidworks_get_assembly_bounding_box", {}))
+        # the cylinder is sketched on Top and extruded along +Y: Ø20 in X/Z, 30 long in Y, box centred on the drop point
+        check("overall box (-25,-25,-25)..(225,115,25)", b["min_mm"] == [-25, -25, -25] and b["max_mm"] == [225, 115, 25]
+              and b["size_mm"] == [250, 140, 50], f"{b['min_mm']} {b['max_mm']} size {b['size_mm']}")
+        boxes = {c["name"]: (c["min_mm"], c["max_mm"]) for c in b.get("components", [])}
+        check("per-component boxes (cylinder tight: Ø20 x 30)", boxes == {
+            "bbox_cube-1": ([-25, -25, -25], [25, 25, 25]),
+            "bbox_cube-2": ([175, -25, -25], [225, 25, 25]),
+            "bbox_cyl-1": ([-10, 85, -10], [10, 115, 10])}, f"{boxes}")
+
+        r = _call(server, "solidworks_suppress_component", {"component": cyl_id, "suppress": True})
+        check("suppress cylinder", _mcp_ok(r), r[:100])
+        b = _mcp_json(R("solidworks_get_assembly_bounding_box", {}))
+        check("suppressed cylinder excluded", b["max_mm"] == [225, 25, 25]
+              and sorted(c["name"] for c in b["components"]) == ["bbox_cube-1", "bbox_cube-2"],
+              f"{b['max_mm']} {[c['name'] for c in b['components']]}")
+        check("part document refused", not _mcp_ok(_call(server, "solidworks_get_assembly_bounding_box", {}))
+              if _mcp_ok(_call(server, "solidworks_new_part", {})) else False)
+        return ok
+    except Exception as e:
+        log(f"assembly_bounding_box FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        _call(server, "solidworks_close_document", {})
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
