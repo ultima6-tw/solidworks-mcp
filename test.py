@@ -2795,9 +2795,9 @@ def test_mcp_sketch_offset(sw, template):
     return bool(plus) and bool(minus)
 
 
-@register_test("mcp_sketch_dimension", "MCP Sketch Dimension", "MCP Tools",
+@register_test("mcp_set_dimension_value", "MCP Sketch Dimension + Set Dimension Value", "MCP Tools",
                "Dimension a rectangle edge to 60 (sketch_dimension), then 70 (set_dimension_value); check volumes", order=35)
-def test_mcp_sketch_dimension(sw, template):
+def test_mcp_set_dimension_value(sw, template):
     rect = ("solidworks_sketch_rectangle", {"width": 40, "height": 20, "centerX": 0, "centerY": 0})
     dim = ("solidworks_sketch_dimension", {"entityPoints": [{"x": 0, "y": 10}], "dimX": 0, "dimY": 20, "value": 60})
     r = _sketch_then_extrude("sketch_dimension 60", [rect, dim], 60 * 20 * 10)
