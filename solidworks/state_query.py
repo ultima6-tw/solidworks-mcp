@@ -69,7 +69,7 @@ class StateQueryTools:
             ),
             Tool(
                 name="solidworks_get_sketch_entities",
-                description="List all tracked sketch entities in a specific sketch. Returns entity IDs, types, and coordinates.",
+                description="List a sketch's entities. 'entities' are the tracked calls (IDs, types, requested coordinates); 'geometry' is read live from SolidWorks: every segment (line/arc/circle/ellipse/spline, construction flag) and standalone point in mm as the sketch holds them now — after dimensions/relations moved them, and including geometry not drawn by these tools (by hand, execute_python, offsets, fillets, sketches in opened files). The two lists are not matched to each other.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -257,10 +257,86 @@ class StateQueryTools:
         data = {k: v for k, v in vars(record).items()}
         return json.dumps({"result": f"✓ {id_str}", **data})
 
+    def _live_sketch_geometry(self, sketch_id: str):
+        """The sketch's geometry as SolidWorks has it now (mm), read from the
+        sketch feature so it works whether or not the sketch is being edited.
+        Returns None when there is no live document or no such sketch.
+
+        This is what was actually drawn, including later changes by
+        dimensions/relations and geometry the tracker never saw (drawn by
+        hand, by execute_python, offsets, fillets, sketches in opened files).
+        Tracked IDs are not mapped onto it: ISketchSegment.GetID repeats
+        within a sketch on SW2022, so there is no reliable key."""
+        from .sketching import _xy, _spline_points
+        doc = self._get_live_doc()
+        if not doc:
+            return None
+        name = sketch_id
+        if sketch_id.startswith("sketch:"):
+            name = self.tracker.get_sw_name(sketch_id) or sketch_id[len("sketch:"):]
+        else:
+            name = self.tracker.get_sw_name(f"sketch:{sketch_id}") or sketch_id
+        feat = doc.FeatureByName(name)
+        if feat is None:
+            return None
+        sk = _prop(feat, "GetSpecificFeature2")
+        if sk is None or not hasattr(sk, "GetSketchSegments"):
+            return None
+
+        def mm(p):
+            x, y = _xy(p)
+            return [round(x * 1000, 6), round(y * 1000, 6)]
+
+        segs, used = [], []
+        for s in (_prop(sk, "GetSketchSegments") or []):
+            t = int(_prop(s, "GetType"))
+            g = {"construction": bool(_prop(s, "ConstructionGeometry"))}
+            try:
+                if t == 0:
+                    g.update(type="line", start=mm(_prop(s, "GetStartPoint2")),
+                             end=mm(_prop(s, "GetEndPoint2")))
+                    used += [g["start"], g["end"]]
+                elif t == 1:
+                    c, a, b = (mm(_prop(s, n)) for n in ("GetCenterPoint2", "GetStartPoint2", "GetEndPoint2"))
+                    r = round(float(_prop(s, "GetRadius")) * 1000, 6)
+                    if a == b:
+                        g.update(type="circle", center=c, radius=r)
+                    else:
+                        g.update(type="arc", center=c, radius=r, start=a, end=b)
+                    used += [c, a, b]
+                elif t == 2:
+                    g.update(type="ellipse", center=mm(_prop(s, "GetCenterPoint2")),
+                             majorPoint=mm(_prop(s, "GetMajorPoint2")),
+                             minorPoint=mm(_prop(s, "GetMinorPoint2")))
+                    used += [g["center"]]
+                elif t == 3:
+                    pts = [[round(x * 1000, 6), round(y * 1000, 6)] for x, y in _spline_points(s)]
+                    g.update(type="spline", points=pts)
+                    used += pts
+                else:
+                    g.update(type={4: "text", 5: "parabola"}.get(t, f"type{t}"))
+            except Exception as e:
+                g.update(type=g.get("type", f"type{t}"), error=str(e))
+            segs.append(g)
+
+        # Points that are not an end or centre of a segment: sketch_point and
+        # the like (the sketch's point list also holds every segment endpoint).
+        points = []
+        for p in (_prop(sk, "GetSketchPoints2") or []):
+            q = mm(p)
+            if not any(abs(q[0] - u[0]) < 1e-6 and abs(q[1] - u[1]) < 1e-6 for u in used):
+                points.append(q)
+        return {"segments": segs, "points": points}
+
     def _get_sketch_entities(self, args: dict) -> str:
         sketch_id = args["sketchId"]
         entities = self.tracker.get_sketch_entities(sketch_id)
-        if not entities:
+        try:
+            geometry = self._live_sketch_geometry(sketch_id)
+        except Exception as e:
+            logger.warning(f"get_sketch_entities: live read of {sketch_id} failed: {e}")
+            geometry = None
+        if not entities and geometry is None:
             return _json_result(f"No entities found in sketch: {sketch_id}")
 
         entity_list = []
@@ -271,8 +347,19 @@ class StateQueryTools:
                 "coordinates": e.coordinates,
             })
 
-        return json.dumps({
-            "result": f"✓ {len(entities)} entities in {sketch_id}",
+        out = {
+            "result": f"✓ {len(entities)} tracked entities in {sketch_id}",
             "sketchId": sketch_id,
             "entities": entity_list,
-        })
+        }
+        if geometry is not None:
+            out["result"] += (f"; SolidWorks has {len(geometry['segments'])} segments and "
+                              f"{len(geometry['points'])} standalone points")
+            out["geometry"] = geometry
+            out["note"] = ("'entities' are the tracked calls with their requested coordinates; "
+                           "'geometry' is what the sketch holds now in mm (after any dimensions/"
+                           "relations, and including geometry not drawn by these tools). They are "
+                           "not matched to each other.")
+        else:
+            out["note"] = "Live geometry unavailable (no active document or sketch not found); coordinates are as requested."
+        return json.dumps(out)

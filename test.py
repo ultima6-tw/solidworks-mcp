@@ -3858,6 +3858,69 @@ def test_mcp_sketch_snapping_tools(sw, template):
         return False
 
 
+@register_test("mcp_sketch_entities_live", "MCP get_sketch_entities Live Geometry", "MCP Tools",
+               "get_sketch_entities returns the sketch's actual geometry: a line lengthened by a dimension reads "
+               "at its new length, a line drawn outside the tools and a standalone point are listed, an arc "
+               "and circle come back with centre/radius; works after the sketch is closed", order=51)
+def test_mcp_sketch_entities_live(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+        results = [
+            R("solidworks_new_part", {}),
+            R("solidworks_create_sketch", {"plane": "Front"}),
+            R("solidworks_sketch_line", {"x1": 0, "y1": 0, "x2": 30, "y2": 0}),
+            R("solidworks_sketch_dimension", {"entityPoints": [{"x": 15, "y": 0}], "dimX": 15, "dimY": -10, "value": 45}),
+            R("solidworks_sketch_circle", {"centerX": 0, "centerY": 40, "radius": 5}),
+            R("solidworks_sketch_arc", {"mode": "center", "centerX": 60, "centerY": 40,
+                                        "x1": 68, "y1": 40, "x2": 60, "y2": 48}),
+            R("solidworks_sketch_point", {"x": 80, "y": 10}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        # a line the tools never saw (as if drawn by hand or with execute_python)
+        sw.ActiveDoc.SketchManager.CreateLine(0.1, 0.0, 0.0, 0.1, 0.02, 0.0)
+        sketch = _mcp_json(results[1])["id"]
+        R("solidworks_exit_sketch", {})
+        out = _mcp_json(R("solidworks_get_sketch_entities", {"sketchId": sketch}))
+        log(f"result: {out.get('result')}")
+        geo = out.get("geometry") or {}
+        segs, pts = geo.get("segments", []), geo.get("points", [])
+        log(f"segments: {segs}")
+        log(f"points: {pts}")
+        lines = [s for s in segs if s.get("type") == "line" and not s["construction"]]
+
+        def has_line(a, b):
+            return any(sorted([tuple(s["start"]), tuple(s["end"])]) == sorted([a, b]) for s in lines)
+
+        dim_line = [s for s in lines if s["start"][1] == 0 and s["end"][1] == 0]
+        check("dimensioned line reads 45 long (requested 30)",
+              len(dim_line) == 1 and abs(abs(dim_line[0]["end"][0] - dim_line[0]["start"][0]) - 45) < 1e-6,
+              f"{dim_line}")
+        check("tracker still has the requested 30 mm line",
+              any(e["type"] == "line" for e in out.get("entities", [])), f"{[e['type'] for e in out.get('entities', [])]}")
+        check("untracked line (100,0)-(100,20) listed", has_line((100.0, 0.0), (100.0, 20.0)), f"{lines}")
+        check("circle centre (0,40) radius 5",
+              any(s.get("type") == "circle" and s["center"] == [0.0, 40.0] and s["radius"] == 5.0 for s in segs))
+        check("arc centre (60,40) radius 8, ends (68,40)/(60,48)",
+              any(s.get("type") == "arc" and s["center"] == [60.0, 40.0] and s["radius"] == 8.0
+                  and sorted([s["start"], s["end"]]) == [[60.0, 48.0], [68.0, 40.0]] for s in segs))
+        check("standalone point (80,10) only", pts == [[80.0, 10.0]], f"{pts}")
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_sketch_entities_live FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "
