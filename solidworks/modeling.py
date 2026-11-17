@@ -470,18 +470,49 @@ class ModelingTools:
                 False      # OptimizeGeometry
             )
 
+        # A wrong direction does not always return None: on SW2022 (probed) a
+        # Through-All cut pointing away from the body comes back as a feature
+        # in error swFeatureErrorExtrusionNoEndFound (31) that removed nothing.
+        # So a feature in error counts as a failed attempt too: delete it (the
+        # absorbed sketch stays, DeleteSelection2 option 0) and try the other way.
+        def _error_code(feat):
+            try:
+                warn = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BOOL, False)
+                return int(feat.GetErrorCode2(warn) or 0)
+            except Exception:
+                return 0
+
+        def _discard(feat):
+            doc.ClearSelection2(True)
+            feat.Select2(False, 0)
+            doc.Extension.DeleteSelection2(0)
+            doc.ClearSelection2(True)
+
+        errors = []
         flipped_note = ""
-        feature = _try_cut(reverse)
-        if not feature:
-            feature = _try_cut(not reverse)
-            if feature:
+        feature = None
+        for attempt, dir_flag in enumerate((reverse, not reverse)):
+            feat = _try_cut(dir_flag)
+            if not feat:
+                errors.append("no feature returned")
+                continue
+            code = _error_code(feat)
+            if code:
+                errors.append(f"swFeatureError_e {code}")
+                logger.info(f"Cut-extrusion attempt {attempt + 1} is in error {code}; discarding it")
+                _discard(feat)
+                continue
+            feature = feat
+            if attempt:
                 flipped_note = " (cut direction auto-flipped into the body)"
                 logger.info("Cut-extrusion direction auto-flipped after initial failure")
+            break
 
         if not feature:
             raise Exception(
-                "Failed to create cut-extrusion in either direction. Ensure the "
-                "sketch profile is closed and overlaps the solid body."
+                "Failed to create cut-extrusion in either direction "
+                f"({'; '.join(errors)}). Ensure the sketch profile is closed and "
+                "overlaps the solid body."
             )
 
         feature_name = feature.Name
