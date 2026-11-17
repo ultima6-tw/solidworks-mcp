@@ -665,7 +665,9 @@ class SketchingTools:
             ),
             Tool(
                 name="solidworks_set_dimension_value",
-                description="Set the value of an existing dimension by selecting it at its text location. Changes the driving value of the dimension, which updates the sketch geometry accordingly.",
+                description="Set the value of an existing dimension by selecting it at its text location. Changes the driving value of the dimension, which updates the sketch geometry accordingly. "
+                            "KNOWN ISSUE (tested on SOLIDWORKS 2022 SP04, 2026-11-17): the pick by text coordinates depends on the SOLIDWORKS window/view and can fail with 'No dimension found at (x, y)' even when the dimension is there. "
+                            "PREFER solidworks_set_parameter with the dimension's name (the 'parameter' returned by sketch_dimension, or from list_parameters, e.g. 'D1@Sketch1') — it is view-independent and passes all tests. Use this tool only when the name is unknown.",
                 inputSchema={
                     "type": "object",
                     "properties": {

@@ -204,7 +204,9 @@ class AssemblyTools:
             ),
             Tool(
                 name="solidworks_suppress_component",
-                description="Suppress or resolve (unsuppress) a component in the active assembly. Suppressed components are excluded from mass properties and interference checks.",
+                description="Suppress or resolve (unsuppress) a component in the active assembly. Suppressed components are excluded from mass properties and interference checks. "
+                            "KNOWN ISSUE (tested on SOLIDWORKS 2022 SP04, 2026-11-17): in the test suite the assembly tool called right after a suppress sometimes failed with 'Active document is not an assembly' although the suppress itself succeeded; a standalone run did not reproduce it. "
+                            "If that happens, call solidworks_activate_document with the assembly's title (see list_documents) and retry the call (workaround not yet confirmed against the failure).",
                 inputSchema={
                     "type": "object",
                     "properties": {
