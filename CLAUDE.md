@@ -83,7 +83,7 @@ solidworks/
   com_utils.py                    # Shared late-bound COM helpers (com_prop)
 test.py                           # Unified test suite with registry, CLI selector (--gui), category/test filters
 clean.py                          # Close all open SolidWorks documents (standalone utility)
-scripts/install.ps1               # End-user installer: installs uv, downloads latest release, sets up venv, patches Claude Desktop config
+INSTALL.md / INSTALL.zh-TW.md     # Setup guide addressed to the AI doing the install (there is no installer script)
 ```
 
 **Test suite (`test.py`):** Uses a decorator-based test registry with 6 categories (Basic, Sketch Tools, Feature Tools, MCP Tools, Assembly, Integration). Each test is `def test_xxx(sw, template) -> bool`. The runner closes all open docs before starting, and between each test. The Integration category wraps the sequential cut-extrude reliability sub-tests as a single meta-test.

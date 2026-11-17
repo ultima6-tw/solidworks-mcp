@@ -13,7 +13,7 @@ were run on, and what is known to be unreliable.
 | SOLIDWORKS | 2022 SP04 (30.4.0), Education Edition, **Traditional Chinese user interface** |
 | SOLIDWORKS CAM | 2022 (needed only for the CAM tools) |
 | Windows | Windows 11 |
-| Python | 3.13 for the test runs (the installer sets up 3.12) |
+| Python | 3.13 for the test runs; the server was also checked end to end with 3.12 |
 
 Nothing else has been tested. Other SOLIDWORKS versions and languages may work
 (the code avoids localized names), but that is not verified. If you run the

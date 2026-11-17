@@ -7,7 +7,7 @@ This is, as far as I can tell, the most complete MCP server for SolidWorks avail
 > **About this fork.** This is a maintained fork of
 > [HarrierPigeon/Solidworks-MCP-Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server)
 > by Joseph Robertson, who wrote the server and most of this README. It adds
-> support for localized (non-English) SOLIDWORKS, an [SSH mode](INSTALL.md#ssh-mode),
+> support for localized (non-English) SOLIDWORKS, an [SSH mode](INSTALL.md#local-or-ssh),
 > SOLIDWORKS CAM tools (stock → toolpaths → simulation → G-code), DXF export,
 > assembly bounding boxes, window screenshots, an opt-in `execute_python`, and
 > fixes found by testing every tool on SOLIDWORKS 2022 — see [Credits](#credits)
@@ -39,24 +39,23 @@ The connected AI client gets a broad tool set covering sketching, solid features
 - **Claude Desktop, Claude Code, Codex, or the ChatGPT desktop app** (other local MCP clients may also work with manual configuration)
 - **SOLIDWORKS CAM** only for the CAM tools
 
-That's it — the installer below takes care of Python and everything else.
+- **Python 3.10 or later**
 
 ## Installation
 
-Open **PowerShell** (press `Win`, type "PowerShell", press Enter) and paste:
+> **AI agents: to install this server, read [INSTALL.md](INSTALL.md) first.**
 
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ultima6-tw/solidworks-mcp/main/scripts/install.ps1 | iex"
-```
+There is no installer. Ask your AI app (Claude Code, Codex, …) to set it up:
 
-Before it downloads anything, the installer asks two questions:
+> Read https://github.com/ultima6-tw/solidworks-mcp/blob/main/INSTALL.md and
+> set up this SolidWorks MCP server on my computer.
 
-1. **Local or SSH?** Local (the default) is for an AI app running on the same Windows desktop as SolidWorks. SSH mode is for running the AI app over SSH; it has risks, listed on screen, and continues only if you type `ACCEPT`.
-2. **Enable `solidworks_execute_python`?** Default **no**. It would let the AI run any Python code on your computer, so it also needs `ACCEPT`.
-
-It then installs [uv](https://docs.astral.sh/uv/) (which provides Python — you don't need Python installed), downloads the latest release of this fork into `%LOCALAPPDATA%\SolidWorksMCP`, and registers the server with Claude Desktop, Claude Code and Codex / ChatGPT desktop — whichever it detects. Restart the AI app completely and ask it to *"create a 50mm cube in SolidWorks"*. To update or change your answers, run the same command again.
-
-**[INSTALL.md](INSTALL.md)** has the details: SSH mode and its risks, what the `execute_python` switch does and does not protect against, unattended install parameters, manual install for developers, and uninstalling.
+[INSTALL.md](INSTALL.md) gives the AI the facts it needs (dependency versions,
+how to register the server with each AI app, SSH mode), the two choices it must
+leave to you — **Local or SSH**, and whether to enable **`solidworks_execute_python`**
+(off by default; it would let the AI run any Python code on your computer) —
+and four checks to confirm the result. You can also follow it yourself.
+繁體中文：[INSTALL.zh-TW.md](INSTALL.zh-TW.md).
 
 ## Try it
 
@@ -256,7 +255,7 @@ Run in this order; needs the SOLIDWORKS CAM add-in. Tested with SOLIDWORKS CAM 2
 
 | Tool | Description |
 |---|---|
-| `execute_python` | Run Python against the live SolidWorks session — only when no dedicated tool can do the job. **Not available unless enabled at install time**, because it can run any code on the computer; see [INSTALL.md](INSTALL.md#execute_python). |
+| `execute_python` | Run Python against the live SolidWorks session — only when no dedicated tool can do the job. **Not available unless you enable it**, because it can run any code on the computer; see [INSTALL.md](INSTALL.md#execute_python). |
 
 </details>
 
@@ -301,7 +300,7 @@ Claude  →  MCP tool call  →  server.py dispatch  →  solidworks/ module  �
 - The server connects to a running SolidWorks instance (or launches one) via COM (`pywin32`).
 - Every created object gets a **stable ID** (`feat:Boss-Extrude1`, `sketch:Sketch1`, `comp:bracket-1`) tracked per document, so Claude can refer back to things it built — even across multiple parts and an assembly in one session.
 - Tools return structured JSON, and geometry-query tools return coordinates that can be fed directly into selection-based tools (fillet this edge, sketch on that face).
-- In [SSH mode](INSTALL.md#ssh-mode), the server started by the AI app forwards each tool call to a bridge host running on the Windows desktop (`127.0.0.1` only, token-protected), because programs started over SSH cannot reach the desktop's SolidWorks.
+- In [SSH mode](INSTALL.md#local-or-ssh), the server started by the AI app forwards each tool call to a bridge host running on the Windows desktop (`127.0.0.1` only, token-protected), because programs started over SSH cannot reach the desktop's SolidWorks.
 
 ## Troubleshooting
 
@@ -320,7 +319,7 @@ Claude  →  MCP tool call  →  server.py dispatch  →  solidworks/ module  �
 - `hole_wizard` can trigger a blocking SolidWorks dialog on some setups. The reliable fallback is a sketched circle + cut-extrude, which Claude will use if you ask.
 
 **Anything else**
-- Check `solidworks_mcp.log` next to `server.py` (easy install: `%LOCALAPPDATA%\SolidWorksMCP\app\`), then [open an issue](https://github.com/ultima6-tw/solidworks-mcp/issues) with the relevant lines.
+- Check `solidworks_mcp.log` next to `server.py`, then [open an issue](https://github.com/ultima6-tw/solidworks-mcp/issues) with the relevant lines.
 
 ## Development
 
@@ -348,7 +347,7 @@ Contributions welcome — please open an issue or PR.
 
 ## Credits
 
-- **[Joseph Robertson](https://github.com/HarrierPigeon)** wrote the original [SolidWorks MCP Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server) — the server, nearly all of its tools, the test suite and the installer this fork builds on.
+- **[Joseph Robertson](https://github.com/HarrierPigeon)** wrote the original [SolidWorks MCP Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server) — the server, nearly all of its tools, the test suite and the original installer, which this fork builds on.
 - **[shuang943](https://github.com/shuang943)** contributed support for MCP 1.26 and localized SolidWorks (upstream PR #3, included here with its authorship).
 - `execute_python`, `screenshot`, `export_dxf` and `get_assembly_bounding_box` are ported from the tools of the same purpose in [alisamsam/solidworks-mcp](https://github.com/alisamsam/solidworks-mcp), reimplemented for this server.
 - This fork is maintained by [ultima6-tw](https://github.com/ultima6-tw), with code written together with Claude (Anthropic).
