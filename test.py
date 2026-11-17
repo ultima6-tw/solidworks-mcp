@@ -3578,6 +3578,88 @@ def test_mcp_screenshot(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+def stdio_export_dxf_check(server_py, timeout_s=60):
+    """Spawn server_py as a REAL MCP stdio server (official mcp client) and send tool
+    calls through the pipe, ending with export_dxf. Every other test calls
+    _route_tool in-process and so never exercises the stdin/stdout transport.
+    Separate from the test so it can be pointed at another copy of server.py.
+    Returns {"toolCount", "steps": [(tool, seconds, text)], "hung"?, "error"?, "stderr"}."""
+    import asyncio
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    # Local mode only: never let an inherited bridge setting route the child to a host.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SOLIDWORKS_MCP_BRIDGE")}
+    out = tempfile.mkdtemp(prefix="swmcp_stdio_test_")   # left in %TEMP%; never deleted by the test
+    res = {"steps": [], "stderr": os.path.join(out, "server_stderr.txt")}
+    calls = [("solidworks_new_part", {}),
+             ("solidworks_create_sketch", {"plane": "Front"}),
+             ("solidworks_sketch_rectangle", {"width": 40, "height": 30, "centerX": 0, "centerY": 0}),
+             ("solidworks_create_extrusion", {"depth": 10}),
+             ("solidworks_export_dxf", {"face": {"x": 0, "y": 0, "z": 10},
+                                        "outputPath": os.path.join(out, "top.DXF")}),
+             ("solidworks_close_document", {})]
+
+    async def run():
+        params = StdioServerParameters(command=sys.executable, args=[server_py], env=env,
+                                       cwd=os.path.dirname(server_py))
+        with open(res["stderr"], "w", encoding="utf-8") as errlog:
+            async with stdio_client(params, errlog=errlog) as (r, w):
+                async with ClientSession(r, w) as s:
+                    res["hung"] = "initialize"
+                    await asyncio.wait_for(s.initialize(), timeout_s)
+                    res["hung"] = "list_tools"
+                    res["toolCount"] = len((await asyncio.wait_for(s.list_tools(), timeout_s)).tools)
+                    for name, args in calls:
+                        res["hung"] = name
+                        t = time.time()
+                        cr = await asyncio.wait_for(s.call_tool(name, args), timeout_s)
+                        text = cr.content[0].text if cr.content else ""
+                        res["steps"].append((name, round(time.time() - t, 1), text))
+                        if text.startswith("❌"):
+                            break
+                    res.pop("hung")
+
+    try:
+        asyncio.run(run())
+    except Exception as e:   # a timeout surfaces as TimeoutError or as an ExceptionGroup on teardown
+        res["error"] = repr(e)[:300]
+    return res
+
+
+@register_test("mcp_stdio_transport", "MCP over real stdio (export_dxf)", "MCP Tools",
+               "server.py spawned by the official MCP stdio client: initialize, list_tools, build a 40x30x10 "
+               "block and export_dxf THROUGH THE PIPE, 60 s limit per call (catches stdio-only hangs, e.g. a "
+               "lazy numpy import while the stdin reader thread is blocked)", order=47)
+def test_mcp_stdio_transport(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        r = stdio_export_dxf_check(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py"))
+        for name, secs, text in r["steps"]:
+            log(f"  {name}: {secs} s")
+        check("no call hung or failed", "hung" not in r and "error" not in r,
+              f"hung at {r.get('hung')}: {r.get('error')} (server stderr: {r['stderr']})" if "hung" in r or "error" in r else "")
+        check("tools listed over stdio", r.get("toolCount", 0) > 0, f"{r.get('toolCount')}")
+        dxf = next((json.loads(t) for n, _, t in r["steps"] if n == "solidworks_export_dxf" and not t.startswith("❌")), None)
+        check("export_dxf answered through stdio: 4 lines, 40 x 30 mm",
+              dxf is not None and dxf.get("entities", {}).get("LINE") == 4
+              and dxf.get("extents_mm") == {"min": [0, 0], "max": [40, 30]},
+              f"{dxf and dxf.get('entities')} {dxf and dxf.get('extents_mm')}")
+        check("document closed through stdio", len(r["steps"]) == 6 and not r["steps"][-1][2].startswith("❌"),
+              r["steps"][-1][2][:80] if r["steps"] else "")
+        return ok
+    except Exception as e:
+        log(f"mcp_stdio_transport FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
