@@ -18,6 +18,7 @@ from .document_manager import DocumentManagerTools
 from .assembly import AssemblyTools
 from .configurations import ConfigurationTools
 from .feature_tree import FeatureTreeTools
+from .cam import CamTools
 
 __all__ = [
     'SolidWorksConnection',
@@ -36,4 +37,5 @@ __all__ = [
     'AssemblyTools',
     'ConfigurationTools',
     'FeatureTreeTools',
+    'CamTools',
 ]

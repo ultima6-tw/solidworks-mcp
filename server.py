@@ -30,6 +30,7 @@ from solidworks import (
     AssemblyTools,
     ConfigurationTools,
     FeatureTreeTools,
+    CamTools,
 )
 
 # Configure logging
@@ -71,6 +72,7 @@ class SolidWorksMCPServer:
         self.assembly = AssemblyTools(self.connection, self.tracker)
         self.configurations = ConfigurationTools(self.connection, self.tracker)
         self.feature_tree = FeatureTreeTools(self.connection, self.tracker)
+        self.cam = CamTools(self.connection, self.tracker)
 
         # All modules (order matters for tool listing)
         self._modules = [
@@ -88,6 +90,7 @@ class SolidWorksMCPServer:
             self.assembly,
             self.configurations,
             self.feature_tree,
+            self.cam,
         ]
 
         # Build dispatch map: tool_name -> module

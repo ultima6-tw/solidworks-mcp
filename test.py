@@ -3242,6 +3242,92 @@ def test_mcp_batch(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+@register_test("mcp_cam_flow", "MCP CAM Flow (setup → features → operations → toolpath → simulate → G-code)", "MCP Tools",
+               "60x40x20 base + 30x20 boss to z=30 + 2x Ø10 blind holes; stock +2/+3/+5 mm; 4 operations; "
+               "simulation 0 gouges, WIP = part + base side offsets; G-code drill depth Z-23.002", order=43)
+def test_mcp_cam_flow(sw, template):
+    if sw.GetAddInObject("CAMWorksAddin.MWAddin") is None:
+        log("SOLIDWORKS CAM add-in not loaded — test cannot run", "ERROR")
+        return False
+    server = create_mcp_server()
+    R = server._route_tool
+    out = tempfile.mkdtemp(prefix="swmcp_cam_test_")   # left in %TEMP%; never deleted by the test
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        for name, args in [
+                ("solidworks_new_part", {}),
+                ("solidworks_create_sketch", {"plane": "Front"}),
+                ("solidworks_sketch_rectangle", {"width": 60, "height": 40, "centerX": 0, "centerY": 0}),
+                ("solidworks_create_extrusion", {"depth": 20}),
+                ("solidworks_create_sketch", {"plane": "Front"}),
+                ("solidworks_sketch_rectangle", {"width": 30, "height": 20, "centerX": 0, "centerY": 0}),
+                ("solidworks_create_extrusion", {"depth": 30}),
+                ("solidworks_hole_wizard", {"type": "HOLE", "standard": "ISO", "size": "Ø10.0", "endCondition": "BLIND",
+                                            "depth": 10, "face": {"x": 22, "y": 0, "z": 20},
+                                            "positions": [{"x": -22, "y": 0, "z": 20}, {"x": 22, "y": 0, "z": 20}]})]:
+            _mcp_json(R(name, args))
+
+        bad = _call(server, "solidworks_cam_setup", {"postProcessor": "NO-SUCH-POST"})
+        check("unknown post processor refused", not _mcp_ok(bad), bad[:100])
+
+        s = _mcp_json(R("solidworks_cam_setup", {
+            "stockOffsets": {"xPlus": 2, "yPlus": 3, "zPlus": 5, "xMinus": 2, "yMinus": 3, "zMinus": 0},
+            "postProcessor": "M3AXIS-TUTORIAL"}))
+        check("setup: post M3AXIS-TUTORIAL", s["postProcessor"].upper() == "M3AXIS-TUTORIAL",
+              f"{s['postProcessor']} of {s['availablePostProcessors']}, material {s['material']}")
+
+        f = _mcp_json(R("solidworks_cam_extract_features", {}))
+        st = f.get("stock") or {}
+        check("2 machinable features", f["count"] == 2, f"{f['setups']}")
+        check("stock = bbox + offsets (64x46x35)", st.get("min_mm") == [-32, -23, 0] and st.get("max_mm") == [32, 23, 35]
+              and abs(st.get("volume_mm3", 0) - 64 * 46 * 35) < 1, f"{st}")
+
+        o = _mcp_json(R("solidworks_cam_generate_operations", {}))
+        ops = o["operations"]
+        check("4 operations named OP1..OP4", [x["name"] for x in ops] == ["OP1", "OP2", "OP3", "OP4"],
+              f"{[(x['name'], x.get('originalName')) for x in ops]}")
+        check("tool diameters 10/20/10/10", [x["tool"]["diameter_mm"] for x in ops] == [10, 20, 10, 10],
+              f"{[(x['tool']['kind'], x['tool']['diameter_mm']) for x in ops]}")
+
+        t = _mcp_json(R("solidworks_cam_generate_toolpath", {}))
+        check("toolpaths for all operations", all(x["generated"] for x in t["operations"]) and t["result"].startswith("✓"),
+              t["result"])
+
+        img = os.path.join(out, "sim.jpg")
+        m = _mcp_json(R("solidworks_cam_simulate", {"show": True, "imagePath": img}))
+        check("simulation: 0 gouges, 0 undercuts", m["gouges"] == 0 and m["undercuts"] == 0, m["result"])
+        w = m.get("wip") or {}
+        check("WIP box = part box inside the stock offsets", w.get("min_mm") == [-32, -23, 0] and w.get("max_mm") == [32, 23, 30],
+              f"{w}")
+        side = (64 * 46 - 60 * 40) * 20     # base side offsets: not a machinable feature, left as stock
+        check("WIP - part = base side offsets", abs(m.get("wipMinusPart_mm3", 1e9) - side) < 20,
+              f"{m.get('wipMinusPart_mm3')} vs {side}")
+        check("simulation image saved", os.path.exists(img) and os.path.getsize(img) > 1000, m.get("image", ""))
+
+        nc = os.path.join(out, "cam_test.nc")
+        p = _mcp_json(R("solidworks_cam_post", {"outputPath": nc}))
+        z = p["ranges_mm"]["Z"]
+        check("G-code written", os.path.exists(nc) and p["lines"] > 100, f"{p['lines']} lines, post {p['postProcessor']}")
+        check("4 tool changes", len(p["toolChanges"]) == 4, f"{p['toolChanges']}")
+        check("deepest Z = hole bottom incl. 118° tip (-23.002)", z and abs(z[0] + 23.002) < 0.01, f"Z {z}")
+        check("tool list (.set) written", p.get("toolList") and os.path.exists(p["toolList"]), f"{p.get('toolList')}")
+        check("no CAM dialogs had to be answered",
+              not any(r.get("dialogs") for r in (s, f, o, t, m, p) if isinstance(r, dict)) and not s.get("notes"))
+        return ok
+    except Exception as e:
+        log(f"mcp_cam_flow FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):
