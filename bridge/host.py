@@ -159,17 +159,13 @@ def main(argv=None):
           f"(session {sid}, pid {os.getpid()}). Keep this window open; Ctrl+C to stop.")
     from solidworks.python_exec import ENV_FLAG, python_enabled
     if python_enabled():
-        print("
-" + "!" * 72 + f"
-  WARNING: solidworks_execute_python is ENABLED ({ENV_FLAG}=1).
-"
-              "  Any client that reaches this host (e.g. an AI agent over SSH) can run
-"
-              "  arbitrary Python on THIS computer with this Windows user's rights.
-"
-              "  Every snippet is logged to solidworks_mcp.log.
-" + "!" * 72 + "
-")
+        bar = "!" * 72
+        print(f"\n{bar}\n"
+              f"  WARNING: solidworks_execute_python is ENABLED ({ENV_FLAG}=1).\n"
+              "  Any client that reaches this host (e.g. an AI agent over SSH) can run\n"
+              "  arbitrary Python on THIS computer with this Windows user's rights.\n"
+              "  Every snippet is logged to solidworks_mcp.log.\n"
+              f"{bar}\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

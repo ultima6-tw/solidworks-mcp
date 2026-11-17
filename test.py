@@ -346,6 +346,38 @@ def make_cube(sw, template, size_mm=100):
 # TEST FUNCTIONS — Basic
 # ===========================================================================
 
+@register_test("code_compiles", "All Python Files Compile", "Basic",
+               "Every .py file of the project compiles and the bridge modules import (catches files that "
+               "no other test loads, e.g. bridge/host.py); does not use SOLIDWORKS", order=-1)
+def test_code_compiles(sw, template):
+    import importlib
+    root = os.path.dirname(os.path.abspath(__file__))
+    skip = {"__pycache__", "workspace", ".git", ".git.nosync", "node_modules"}
+    ok, count = True, 0
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in skip and not x.startswith(".venv")]
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            path = os.path.join(d, f)
+            count += 1
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    compile(fh.read(), path, "exec")   # syntax only, no .pyc written
+            except SyntaxError as e:
+                log(f"{os.path.relpath(path, root)} line {e.lineno}: {e.msg}", "ERROR")
+                ok = False
+    log(f"{count} .py files compiled", "SUCCESS" if ok else "ERROR")
+    for mod in ("server", "bridge.client", "bridge.host", "solidworks.python_exec"):
+        try:
+            importlib.import_module(mod)
+            log(f"import {mod}", "SUCCESS")
+        except Exception as e:
+            log(f"import {mod}: {e}", "ERROR")
+            ok = False
+    return ok
+
+
 @register_test("basic_cube", "Basic Cube (100mm)", "Basic",
                "Create a 100mm cube end-to-end: part, sketch, extrude", order=0)
 def test_basic_cube(sw, template):
