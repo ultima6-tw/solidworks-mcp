@@ -3660,6 +3660,75 @@ def test_mcp_stdio_transport(sw, template):
         return False
 
 
+@register_test("mcp_sketch_snapping", "MCP Sketch Snapping Read-back", "MCP Tools",
+               "At a zoomed-out view (panel-sized sketch, zoom to fit) small circles beside a rectangle and a "
+               "rectangle in line with small circles come out exactly as asked (snapping used to resize them "
+               "silently); joined lines still share one endpoint; the snapping preference is restored", order=48)
+def test_mcp_sketch_snapping(sw, template):
+    try:
+        import types
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        def prop(o, n):
+            v = getattr(o, n)
+            return v() if isinstance(v, types.MethodType) else v
+
+        snap_before = sw.GetUserPreferenceToggle(249)        # swSketchInference
+        server = create_mcp_server()
+        results = [
+            server._route_tool("solidworks_new_part", {}),
+            server._route_tool("solidworks_create_sketch", {"plane": "Front"}),
+            server._route_tool("solidworks_sketch_rectangle", {"x1": 0, "y1": 0, "x2": 210, "y2": 430}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        doc = sw.ActiveDoc
+        doc.ViewZoomtofit2()
+        log(f"view scale after zoom to fit: {prop(doc.ActiveView, 'Scale2'):.3f}")
+        results = [
+            # circles beside a rectangle (the chassis v9 case: radius 1.7 came out 3.5)
+            server._route_tool("solidworks_sketch_rectangle", {"centerX": 130, "centerY": 190, "width": 7, "height": 14}),
+            server._route_tool("solidworks_sketch_circle", {"centerX": 130, "centerY": 175.755, "radius": 1.7}),
+            server._route_tool("solidworks_sketch_circle", {"centerX": 130, "centerY": 204.245, "radius": 1.7}),
+            # rectangle in line with circles (the v11 case: width 7 came out 3.4)
+            server._route_tool("solidworks_sketch_circle", {"centerX": 60, "centerY": 35.755, "radius": 1.7}),
+            server._route_tool("solidworks_sketch_circle", {"centerX": 60, "centerY": 64.245, "radius": 1.7}),
+            server._route_tool("solidworks_sketch_rectangle", {"centerX": 60, "centerY": 100, "width": 7, "height": 14}),
+            # two lines drawn separately that share an endpoint
+            server._route_tool("solidworks_sketch_line", {"x1": 20, "y1": 300, "x2": 50, "y2": 300}),
+            server._route_tool("solidworks_sketch_line", {"x1": 50, "y1": 300, "x2": 50, "y2": 330}),
+        ]
+        if not mcp_check_results(results):
+            return False
+        sk = doc.SketchManager.ActiveSketch
+        radii, lines = [], []
+        for s in prop(sk, "GetSketchSegments"):
+            if prop(s, "GetType") == 1:                        # swSketchARC
+                radii.append(round(prop(s, "GetRadius") * 1000, 4))
+            else:
+                lines.append(round(prop(s, "GetLength") * 1000, 4))
+        check("4 circles, all radius 1.7", sorted(radii) == [1.7] * 4, f"{radii}")
+        check("rectangle edges 7/14 (x4 each), outline 210/430, lines 30/30",
+              sorted(lines) == sorted([7.0] * 4 + [14.0] * 4 + [210.0, 210.0, 430.0, 430.0, 30.0, 30.0]),
+              f"{sorted(lines)}")
+        shared = [p for p in prop(sk, "GetSketchPoints2")
+                  if abs(prop(p, "X") - 0.050) < 1e-9 and abs(prop(p, "Y") - 0.300) < 1e-9]
+        check("joined lines share one endpoint", len(shared) == 1, f"{len(shared)} points at (50, 300)")
+        check("snapping preference restored", sw.GetUserPreferenceToggle(249) == snap_before,
+              f"before {snap_before}, after {sw.GetUserPreferenceToggle(249)}")
+        server._route_tool("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_sketch_snapping FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

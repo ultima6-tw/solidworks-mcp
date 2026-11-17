@@ -12,6 +12,8 @@ import time
 from mcp.types import Tool
 from typing import Any, Dict, List
 
+from .com_utils import com_prop
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +52,61 @@ def no_dimension_value_prompt(app):
                 logger.warning(f"could not restore 'Input dimension value': {e}")
 
 
+# swUserPreferenceToggle_e.swSketchInference (swconst.tlb, SW2022) — Tools >
+# Options > Sketch > Relations/Snaps > "Enable snapping". While ON, a Create*
+# call can be pulled onto nearby geometry: probed at a zoomed-out view (scale
+# 0.42), a radius-1.7 circle next to a 7 mm-wide rectangle came out radius 3.5
+# (its edge snapped onto the rectangle's side), and a rectangle drawn in line
+# with small circles lost half its width (its sides snapped to the circles'
+# quadrant points) -- even with AddToDB=True. With this toggle OFF both draw
+# exactly. It is also what joins separately drawn lines that share an
+# endpoint, so it is only switched off for a redraw that has already gone wrong.
+SW_SKETCH_INFERENCE = 249
+
+# Read-back tolerance for drawn geometry, in metres (1e-5 mm).
+_DRAW_TOL_M = 1e-8
+
+
+@contextlib.contextmanager
+def sketch_snapping_off(app):
+    """Temporarily turn off sketch snapping, then restore the user's setting.
+    Never raises: if the preference cannot be read/changed, the redraw simply
+    runs with whatever is set and the read-back check reports the outcome."""
+    previous = None
+    try:
+        previous = bool(app.GetUserPreferenceToggle(SW_SKETCH_INFERENCE))
+        if previous:
+            app.SetUserPreferenceToggle(SW_SKETCH_INFERENCE, False)
+    except Exception as e:
+        logger.warning(f"could not switch off sketch snapping: {e}")
+        previous = None
+    try:
+        yield
+    finally:
+        if previous:
+            try:
+                app.SetUserPreferenceToggle(SW_SKETCH_INFERENCE, True)
+            except Exception as e:
+                logger.warning(f"could not restore sketch snapping: {e}")
+
+
+def _xy(point):
+    """(x, y) in metres from a sketch point (COM object with X/Y) or a
+    coordinate array, whichever late binding handed back."""
+    if hasattr(point, "X"):
+        return float(com_prop(point, "X")), float(com_prop(point, "Y"))
+    seq = list(point)
+    return float(seq[0]), float(seq[1])
+
+
+def _segment_list(obj):
+    """A Create* result as a list of sketch segments (rectangles return an
+    array of four lines, the other calls a single segment)."""
+    if isinstance(obj, (list, tuple)):
+        return [s for s in obj if s is not None]
+    return [obj]
+
+
 def dismiss_modify_dialog(delay=0.5, max_wait=10.0):
     """Fallback: find and auto-dismiss the SolidWorks 'Modify' dimension dialog.
 
@@ -85,9 +142,11 @@ class _direct_retry:
     Probed on SW2022: with AddToDB off (the default), small entities fail
     depending on the current view scale — a radius-1mm circle returns None
     while 2mm works, anywhere in the sketch. With AddToDB on the same call
-    succeeds. The normal path is kept first because it adds the automatic
-    relations (e.g. coincident endpoints of separately drawn lines) that
-    callers rely on; the retry only rescues calls that would have failed.
+    succeeds. The retry only rescues calls that would have failed.
+
+    A call that SUCCEEDS can still be wrong: snapping may move or resize the
+    entity. That is caught separately by SketchingTools._draw_checked, which
+    reads the geometry back.
     """
 
     def __init__(self, doc):
@@ -1138,6 +1197,101 @@ class SketchingTools:
             )
         return obj
 
+    @staticmethod
+    def _segment_count(doc) -> int:
+        try:
+            segs = com_prop(doc.SketchManager.ActiveSketch, "GetSketchSegments")
+        except Exception:
+            return -1
+        return len(segs) if segs else 0
+
+    def _delete_drawn(self, doc, obj):
+        """Delete the segments of one Create* result from the active sketch."""
+        callout = self._null_callout()
+        doc.ClearSelection2(True)
+        for seg in _segment_list(obj):
+            seg.Select4(True, callout)
+        doc.EditDelete()
+        doc.ClearSelection2(True)
+
+    def _draw_checked(self, doc, what, create, check):
+        """Draw, read the geometry back, and redraw with snapping off if the
+        sketch did not get what was asked for.
+
+        create(sm) performs the Create* call on the given SketchManager proxy;
+        check(obj) returns a list of mismatch descriptions (empty = exact).
+        Snapping silently moves/resizes entities that land near existing
+        geometry at a zoomed-out view, and the call still "succeeds" -- so the
+        result is verified instead of trusted. Raises (with nothing left in
+        the sketch) if even the snapping-off redraw is wrong.
+        """
+        before = self._segment_count(doc)
+        obj = self._check_drawn(create(_direct_retry(doc)), what)
+        problems = check(obj)
+        if not problems:
+            return obj
+        logger.warning(f"{what}: drawn geometry differs from the request "
+                       f"({'; '.join(problems)}) -- redrawing with snapping off")
+        self._delete_drawn(doc, obj)
+        if before >= 0 and self._segment_count(doc) != before:
+            raise Exception(f"{what}: snapping moved the entity and it could not be "
+                            f"removed cleanly ({'; '.join(problems)}). Check the sketch.")
+        with sketch_snapping_off(self.connection.app):
+            obj = self._check_drawn(create(_direct_retry(doc)), what)
+        problems = check(obj)
+        if problems:
+            self._delete_drawn(doc, obj)
+            raise Exception(f"SolidWorks drew {what} at the wrong size/position even "
+                            f"with snapping off ({'; '.join(problems)}). Nothing was "
+                            f"added to the sketch.")
+        logger.info(f"{what}: redrawn exactly with snapping off")
+        return obj
+
+    @staticmethod
+    def _check_circle(obj, cx, cy, r):
+        """Mismatches of a drawn circle vs centre (cx, cy) / radius r (metres)."""
+        out = []
+        got_r = float(com_prop(obj, "GetRadius"))
+        gx, gy = _xy(com_prop(obj, "GetCenterPoint2"))
+        if abs(got_r - r) > _DRAW_TOL_M:
+            out.append(f"radius {got_r * 1000:.4f} mm, wanted {r * 1000:.4f}")
+        if abs(gx - cx) > _DRAW_TOL_M or abs(gy - cy) > _DRAW_TOL_M:
+            out.append(f"centre ({gx * 1000:.4f}, {gy * 1000:.4f}) mm, "
+                       f"wanted ({cx * 1000:.4f}, {cy * 1000:.4f})")
+        return out
+
+    @staticmethod
+    def _check_rectangle(obj, x1, y1, x2, y2):
+        """Mismatches of a drawn corner rectangle vs its corners (metres)."""
+        segs = _segment_list(obj)
+        pts = []
+        for seg in segs:
+            pts.append(_xy(com_prop(seg, "GetStartPoint2")))
+            pts.append(_xy(com_prop(seg, "GetEndPoint2")))
+        if len(segs) != 4:
+            return [f"{len(segs)} edges instead of 4"]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        got = (min(xs), min(ys), max(xs), max(ys))
+        want = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        if any(abs(g - w) > _DRAW_TOL_M for g, w in zip(got, want)):
+            return ["corners ({:.4f}, {:.4f})-({:.4f}, {:.4f}) mm, wanted "
+                    "({:.4f}, {:.4f})-({:.4f}, {:.4f})".format(
+                        *(v * 1000 for v in got + want))]
+        return []
+
+    @staticmethod
+    def _check_line(obj, x1, y1, x2, y2):
+        """Mismatches of a drawn line vs its endpoints (metres), either direction."""
+        a = _xy(com_prop(obj, "GetStartPoint2"))
+        b = _xy(com_prop(obj, "GetEndPoint2"))
+        close = lambda p, q: abs(p[0] - q[0]) <= _DRAW_TOL_M and abs(p[1] - q[1]) <= _DRAW_TOL_M
+        if (close(a, (x1, y1)) and close(b, (x2, y2))) or (close(a, (x2, y2)) and close(b, (x1, y1))):
+            return []
+        return [f"endpoints ({a[0] * 1000:.4f}, {a[1] * 1000:.4f})-({b[0] * 1000:.4f}, "
+                f"{b[1] * 1000:.4f}) mm, wanted ({x1 * 1000:.4f}, {y1 * 1000:.4f})-"
+                f"({x2 * 1000:.4f}, {y2 * 1000:.4f})"]
+
     def sketch_rectangle(self, args: dict) -> str:
         """Draw rectangle with spatial awareness"""
         doc = self.connection.get_active_doc()
@@ -1179,8 +1333,10 @@ class SketchingTools:
         y2 = center_y_m + height_m / 2
         
         # Draw rectangle
-        obj = _direct_retry(doc).CreateCornerRectangle(x1, y1, 0.0, x2, y2, 0.0)
-        self._check_drawn(obj, f"rectangle {width}mm x {height}mm")
+        self._draw_checked(
+            doc, f"rectangle {width}mm x {height}mm",
+            lambda sm: sm.CreateCornerRectangle(x1, y1, 0.0, x2, y2, 0.0),
+            lambda obj: self._check_rectangle(obj, x1, y1, x2, y2))
 
         # Track this shape
         shape_info = {
@@ -1230,8 +1386,10 @@ class SketchingTools:
         r_m = radius / 1000.0
         
         # Draw circle
-        obj = _direct_retry(doc).CreateCircleByRadius(cx_m, cy_m, 0.0, r_m)
-        self._check_drawn(obj, f"circle radius {radius}mm")
+        self._draw_checked(
+            doc, f"circle radius {radius}mm",
+            lambda sm: sm.CreateCircleByRadius(cx_m, cy_m, 0.0, r_m),
+            lambda obj: self._check_circle(obj, cx_m, cy_m, r_m))
         
         # Track this shape
         shape_info = {
@@ -1273,11 +1431,11 @@ class SketchingTools:
         x1, y1 = args["x1"], args["y1"]
         x2, y2 = args["x2"], args["y2"]
 
-        obj = _direct_retry(doc).CreateLine(
-            x1 / 1000.0, y1 / 1000.0, 0.0,
-            x2 / 1000.0, y2 / 1000.0, 0.0
-        )
-        self._check_drawn(obj, f"line ({x1}, {y1}) -> ({x2}, {y2})")
+        m = (x1 / 1000.0, y1 / 1000.0, x2 / 1000.0, y2 / 1000.0)
+        self._draw_checked(
+            doc, f"line ({x1}, {y1}) -> ({x2}, {y2})",
+            lambda sm: sm.CreateLine(m[0], m[1], 0.0, m[2], m[3], 0.0),
+            lambda obj: self._check_line(obj, *m))
 
         shape_info = {
             "type": "line",
