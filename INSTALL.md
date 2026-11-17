@@ -15,10 +15,14 @@ also follow it yourself.
 ## Rules for the AI doing the setup
 
 1. **Ask the person; do not decide for them.** Two choices change what this
-   server can do on their computer: [Local or SSH](#local-or-ssh) and
-   [execute_python](#execute_python). Show them the risks below as written, and
-   use the safe default (Local, execute_python off) unless they clearly choose
-   otherwise.
+   server can do on their computer:
+   - [Local or SSH](#local-or-ssh): if you are running on the Windows desktop
+     (session ID is not 0), use Local — there is nothing to ask. If you are
+     running in an SSH session (session 0), Local mode cannot work there: ask
+     whether they want SSH mode or would rather run the AI app on the desktop,
+     and show them the SSH risks below before they decide.
+   - [execute_python](#execute_python): always ask. Show them the risks below
+     as written; it stays off unless they clearly choose to enable it.
 2. **Show your plan before you change anything**: where you will put the files,
    which Python you will use, and which config files you will edit. Back up a
    config file before you edit it, and keep the other entries in it.
