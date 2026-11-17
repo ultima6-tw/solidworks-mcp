@@ -41,6 +41,18 @@ import win32com.client
 from mcp.types import Tool
 from .com_utils import com_prop
 
+# Load ezdxf (and numpy, which it pulls in) at server startup, NOT lazily inside
+# export_dxf. On Windows the first numpy DLL load hangs forever while another
+# thread is blocked reading a stdin pipe -- and the MCP stdio transport always is.
+# Measured: lazy import inside the tool call never returned under Claude Code;
+# the same import with no stdin reader thread takes 0.45 s. export_dxf's own
+# `import ezdxf` then just hits sys.modules. Missing ezdxf stays non-fatal.
+try:
+    import ezdxf  # noqa: F401
+    from ezdxf import bbox as _ezdxf_bbox  # noqa: F401
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # swDocumentTypes_e
