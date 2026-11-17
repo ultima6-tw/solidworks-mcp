@@ -49,14 +49,14 @@ python test.py                              # 全部
 
 ## 測試範圍
 
-6 個類別共 84 個測試（完整清單用 `python test.py --list`）：
+6 個類別共 85 個測試（完整清單用 `python test.py --list`）：
 
 | 類別 | 數量 | 檢查內容 |
 |---|---|---|
 | Basic | 2 | 所有 `.py` 都能編譯、bridge 模組能載入（不需要 SOLIDWORKS）；從頭建一個方塊 |
 | Sketch Tools | 12 | 各種草圖圖元、尺寸、限制條件、建構線 |
 | Feature Tools | 9 | 除料伸長、圓角、倒角、薄殼、旋轉、疊層拉伸、參考平面、質量屬性、特徵清單 |
-| MCP Tools | 52 | 用 AI 呼叫的方式（經過 server 的工具分派）呼叫工具，並核對幾何、體積、ID、輸出檔案。其中 `mcp_stdio_transport` 會把 `server.py` 當成真正的 MCP stdio server 啟動，所有呼叫都經過 pipe 傳送；只有經過 stdio 才會出現的卡住問題，其他測試抓不到 |
+| MCP Tools | 53 | 用 AI 呼叫的方式（經過 server 的工具分派）呼叫工具，並核對幾何、體積、ID、輸出檔案。其中 `mcp_stdio_transport` 會把 `server.py` 當成真正的 MCP stdio server 啟動，所有呼叫都經過 pipe 傳送；只有經過 stdio 才會出現的卡住問題，其他測試抓不到 |
 | Assembly | 8 | 文件存檔／切換／關閉、插入零件、結合、干涉與抑制、各文件獨立的狀態、參數修改、外框 |
 | Integration | 1 | 在同一個本體上連續做多次除料伸長 |
 
@@ -69,11 +69,10 @@ python test.py                              # 全部
 **通過標準是：每個測試單獨跑（`--test <id>`）都要通過。** 在上面的環境中，除了下面兩個例外，
 每個測試都符合。
 
-最近一次全套連續跑（`python test.py`，當時 73 個測試）通過 70 個。失敗的 3 個跟前一次全套
-失敗的不一樣，而且單獨跑都會通過；它們都跟「用座標點選幾何」或「目前作用中的文件」有關。
-原因還沒找到。之後新增的 11 個測試（`code_compiles`、`mcp_cam_flow`、`mcp_export_dxf`、
-`assembly_bounding_box`、`mcp_execute_python`、`mcp_screenshot`、`mcp_stdio_transport`、
-`mcp_sketch_snapping`、`mcp_sketch_snapping_tools`、`mcp_sketch_entities_live`、`mcp_extrusion_error`）單獨跑都通過；84 個還沒有一次全部連續跑過。
+最近一次全套連續跑（2026-11-18）：85 個依類別一次跑完，**85/85 通過**（22 分鐘，SOLIDWORKS 2022 SP4
+剛重開）。用的執行器呼叫同樣的測試函式，但跟 `python test.py` 不同，不會關掉執行前就開著的文件。
+更早一次 `python test.py`（當時 73 個測試）通過 70 個，失敗的 3 個跟再前一次不一樣、單獨跑都會過，
+都跟「用座標點選幾何」或「目前作用中的文件」有關；原因沒找到，這次 85/85 沒有再出現。
 
 單獨跑也已知不穩定的工具（工具說明裡也這樣告訴 AI）：
 

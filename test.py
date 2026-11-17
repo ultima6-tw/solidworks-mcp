@@ -3921,6 +3921,128 @@ def test_mcp_sketch_entities_live(sw, template):
         return False
 
 
+@register_test("mcp_feature_error_check", "MCP Feature Error/Warning Check", "MCP Tools",
+               "Server-level check on every feature tool: a linear pattern and a mirror whose copies land "
+               "outside the body (SW keeps them with warning 51 and they add nothing) come back marked with a "
+               "warning instead of a check mark; a normal pattern stays clean; a feature created in error is "
+               "removed and reported, its sketch kept", order=52)
+def test_mcp_feature_error_check(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+        for name, args in [("solidworks_new_part", {}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_rectangle", {"width": 100, "height": 100, "centerX": 50, "centerY": 50}),
+                           ("solidworks_create_extrusion", {"depth": 100}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_circle", {"radius": 5, "centerX": 50, "centerY": 50})]:
+            _mcp_json(R(name, args))
+        hole = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10}))["id"]
+
+        good = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"},
+                                                         "spacing1": 20, "count1": 3}))
+        check("pattern inside the body: check mark, no warnings",
+              good["result"].startswith("✓") and "featureWarnings" not in good, good["result"][:120])
+        off = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"},
+                                                        "spacing1": 150, "count1": 3}))
+        check("pattern outside the body: warning 51",
+              off["result"].startswith("⚠") and [w["code"] for w in off.get("featureWarnings", [])] == [51],
+              off["result"][:200])
+        mir = _mcp_json(R("solidworks_mirror", {"features": [hole], "mirrorPlane": "Right"}))
+        check("mirror copy outside the body: warning 51",
+              mir["result"].startswith("⚠") and [w["code"] for w in mir.get("featureWarnings", [])] == [51],
+              mir["result"][:200])
+        doc = sw.ActiveDoc
+        names = {f.Name for f in (doc.FeatureManager.GetFeatures(True) or [])}
+        check("features with a warning are kept", off["id"].split(":", 1)[1] in names and mir["id"].split(":", 1)[1] in names)
+
+        # Error branch: a Through-All boss pointing away from the body, made with
+        # raw COM so no tool's own check gets to it first.
+        sk = _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))["id"].split(":", 1)[1]
+        _mcp_json(R("solidworks_sketch_rectangle", {"width": 10, "height": 10, "centerX": 300, "centerY": 50}))
+        R("solidworks_exit_sketch", {})
+        from solidworks.feature_errors import feature_names
+        before = feature_names(doc)
+        doc.ClearSelection2(True)
+        doc.FeatureByName(sk).Select2(False, 0)
+        feat = doc.FeatureManager.FeatureExtrusion2(True, False, True, 1, 0, 0.01, 0.0, False, False, False, False,
+                                                    0.0, 0.0, False, False, False, False, True, True, True, 0, 0, False)
+        if feat is None:
+            log("SOLIDWORKS returned None for the away-from-body boss this time (no feature in error to "
+                "check) -- error branch not exercised", "WARNING")
+        else:
+            try:
+                server._apply_feature_check("solidworks_create_extrusion", doc, before, '{"result": "✓ x"}')
+                r = "no exception"
+            except Exception as e:
+                r = str(e)
+            check("feature in error: reported with the official text", "31" in r and "Cannot locate end" in r, r[:200])
+            names = feature_names(doc)
+            check("feature in error removed, its sketch kept", names == before, f"{sorted(names ^ before)}")
+        R("solidworks_close_document", {})
+
+        # Error branch without SOLIDWORKS (which, freshly started, tends to return
+        # None instead of a feature in error): a stand-in document whose newest
+        # feature reports error 31 must be deleted, dropped from the tracker and
+        # reported; one reporting a warning must be kept.
+        class Feat:
+            def __init__(self, name, code=0, warning=False, nxt=None):
+                self.Name, self.code, self.warning, self.GetNextFeature = name, code, warning, nxt
+                self.selected = False
+
+            def GetErrorCode2(self, w):
+                w.value = self.warning
+                return self.code
+
+            def Select2(self, append, mark):
+                self.selected = True
+                return True
+
+        class Ext:
+            def __init__(self, doc):
+                self.doc = doc
+
+            def DeleteSelection2(self, opt):
+                self.doc.deleted += [f.Name for f in self.doc.feats if f.selected]
+                return True
+
+        class Doc:
+            def __init__(self, feats):
+                self.feats = feats
+                for a_, b_ in zip(feats, feats[1:] + [None]):
+                    a_.GetNextFeature = b_
+                self.FirstFeature = feats[0]
+                self.deleted = []
+                self.Extension = Ext(self)
+
+            def ClearSelection2(self, _):
+                for f in self.feats:
+                    f.selected = False
+
+        fake = Doc([Feat("Base"), Feat("Bad", 31), Feat("Iffy", 51, True)])
+        server.tracker.register_feature("Bad", "extrusion")
+        try:
+            server._apply_feature_check("solidworks_create_extrusion", fake, {"Base"}, '{"result": "✓ x"}')
+            r = "no exception"
+        except Exception as e:
+            r = str(e)
+        check("stand-in error 31: call fails with the official text", "Cannot locate end of feature" in r, r[:160])
+        check("stand-in: only the feature in error is deleted", fake.deleted == ["Bad"], f"{fake.deleted}")
+        check("stand-in: its tracker record is dropped", server.tracker.resolve_id("feat:Bad") is None)
+        return ok
+    except Exception as e:
+        log(f"mcp_feature_error_check FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "

@@ -13,6 +13,8 @@ import asyncio
 from pathlib import Path
 import pythoncom
 
+from solidworks.feature_errors import check_new_features, describe, feature_names
+from solidworks.com_utils import com_prop
 from solidworks import (
     SolidWorksConnection,
     StateTracker,
@@ -212,10 +214,60 @@ class SolidWorksMCPServer:
         if module is None:
             raise Exception(f"Unknown tool: {name}")
 
+        # Every tool of a feature-creating module gets the feature error check:
+        # SOLIDWORKS can return a feature that is in error or carries a warning
+        # and did nothing, while the tool reports success (see feature_errors).
+        doc, names_before = None, None
+        if module in (self.modeling, self.features, self.cut_features, self.applied_features,
+                      self.patterns, self.hole_features, self.reference_geometry):
+            try:
+                doc = self.connection.get_active_doc()
+                if doc is not None and int(com_prop(doc, "GetType")) in (1, 2):
+                    names_before = feature_names(doc)
+            except Exception as e:
+                logger.debug(f"feature snapshot before {name} skipped: {e}")
+                names_before = None
+
         # Modeling module needs a reference to sketching tools
         if module is self.modeling:
-            return module.execute(name, arguments, self.sketching)
-        return module.execute(name, arguments)
+            out = module.execute(name, arguments, self.sketching)
+        else:
+            out = module.execute(name, arguments)
+        if names_before is None:
+            return out
+        return self._apply_feature_check(name, doc, names_before, out)
+
+    def _apply_feature_check(self, name, doc, names_before, out):
+        """Errors: the feature is removed and the call fails. Warnings: the
+        feature is kept and the result is marked ⚠ with the official text."""
+        import json as _json
+        try:
+            errors, warnings = check_new_features(doc, names_before, self.tracker)
+        except Exception as e:
+            logger.warning(f"feature error check after {name} failed: {e}")
+            return out
+        if errors:
+            listed = "; ".join(f"'{n}' ({describe(c)})" for n, c in errors)
+            raise Exception(
+                f"{name}: SOLIDWORKS created the feature in an error state, so it did not "
+                f"do what was asked -- {listed}. The feature was removed (its sketch is kept).")
+        if not warnings:
+            return out
+        note = (" ⚠ SOLIDWORKS flags "
+                + "; ".join(f"'{n}' with a warning ({describe(c)})" for n, c in warnings)
+                + ". The feature was kept but may not have done everything asked "
+                  "(e.g. pattern/mirror copies outside the body) -- check the geometry.")
+        try:
+            data = _json.loads(out)
+            if isinstance(data, dict) and isinstance(data.get("result"), str):
+                r = data["result"]
+                data["result"] = ("⚠" + r[1:] if r.startswith("✓") else r) + note
+                data["featureWarnings"] = [{"feature": n, "code": c, "description": describe(c)}
+                                           for n, c in warnings]
+                return _json.dumps(data)
+        except Exception:
+            pass
+        return out + note
 
     def _execute_batch(self, arguments: dict) -> str:
         """Sequentially execute a list of tool calls in one MCP request.
