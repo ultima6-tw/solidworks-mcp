@@ -23,8 +23,9 @@ also follow it yourself.
    which Python you will use, and which config files you will edit. Back up a
    config file before you edit it, and keep the other entries in it.
 3. **Do not close or modify the person's SOLIDWORKS documents.** The checks
-   below create their own part. The test suite (`test.py`) closes **all** open
-   documents **without saving** — run it only if the person agrees.
+   below create their own part. **Do not run `test.py` during setup**: it is for
+   developing this project, and it closes **all** open documents **without
+   saving** before it starts.
 4. **Check the result** with [the checks below](#check-the-installation) and
    report what passed and what did not.
 
@@ -195,11 +196,8 @@ Then, in the AI app, check:
    returns 4 LINE entities and extents (0, 0)–(50, 50) mm.
 5. Close the cube with `solidworks_close_document` (it discards changes).
 
-Without SOLIDWORKS documents being touched, `python test.py --test code_compiles`
-checks that every file compiles. With the person's agreement (it closes all
-open documents without saving), `python test.py --test mcp_stdio_transport`
-starts the server the way an AI app does and runs real tool calls through it.
-See [TESTING.md](TESTING.md) for the rest.
+These checks are enough. The project itself has already been tested (see
+[TESTING.md](TESTING.md)), so there is no need to run its test suite.
 
 **If a tool call never returns**, read `solidworks_mcp.log`: if the last line is
 the tool being called, look on the desktop for a SOLIDWORKS dialog. In SSH mode,

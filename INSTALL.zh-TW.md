@@ -17,8 +17,8 @@
    除非他明確選擇，否則一律用安全的預設值（本機、execute_python 關閉）。
 2. **動手前先說明計畫**：檔案要放哪裡、用哪個 Python、要改哪些設定檔。改設定檔之前先備份，
    並保留檔案裡的其他設定。
-3. **不要關閉或修改使用者的 SOLIDWORKS 文件。** 下面的檢查會自己建一個零件。測試程式
-   （`test.py`）會**不存檔**關掉**所有**開著的文件——使用者同意才能跑。
+3. **不要關閉或修改使用者的 SOLIDWORKS 文件。** 下面的檢查會自己建一個零件。**安裝時不要跑
+   `test.py`**：它是開發這個專案用的，一開始就會**不存檔**關掉**所有**開著的文件。
 4. **確認結果**：用[下面的檢查](#確認安裝結果)，回報哪些通過、哪些沒有。
 
 ## 需求
@@ -158,9 +158,8 @@ Python 程式碼。它能做到專用工具做不到的事，但不限於 SOLIDW
    範圍 (0, 0)–(50, 50) mm。
 5. 用 `solidworks_close_document` 關掉立方體（不會存檔）。
 
-不會動到 SOLIDWORKS 文件的檢查：`python test.py --test code_compiles` 確認每個檔案都能編譯。
-使用者同意的話（它會不存檔關掉所有開著的文件），`python test.py --test mcp_stdio_transport`
-會用 AI 程式的方式啟動 server，實際透過它呼叫工具。其他測試見 [TESTING.zh-TW.md](TESTING.zh-TW.md)。
+做完這些檢查就夠了。這個專案本身已經測試過（見 [TESTING.zh-TW.md](TESTING.zh-TW.md)），
+安裝時不需要再跑它的測試程式。
 
 **如果某個工具呼叫一直沒有回應**，看 `solidworks_mcp.log`：如果最後一行是那個工具被呼叫，
 先看桌面上有沒有 SOLIDWORKS 的對話框。SSH 模式還要確認 bridge host 的視窗開著。
