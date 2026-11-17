@@ -26,6 +26,12 @@ also follow it yourself.
 2. **Show your plan before you change anything**: where you will put the files,
    which Python you will use, and which config files you will edit. Back up a
    config file before you edit it, and keep the other entries in it.
+   - Say **where the server will be registered**: which AI app, and at which
+     level — for Claude Code, `user` (loaded in every project) or `project` /
+     `local` (this folder only).
+   - **Check for an existing entry with the same name first** (for example
+     `claude mcp list`). If there is one, ask the person what to do; do not
+     overwrite or rename it on your own.
 3. **Do not close or modify the person's SOLIDWORKS documents.** The checks
    below create their own part. **Do not run `test.py` during setup**: it is for
    developing this project, and it closes **all** open documents **without
