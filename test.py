@@ -3328,6 +3328,65 @@ def test_mcp_cam_flow(sw, template):
         _call(server, "solidworks_close_document", {})
 
 
+@register_test("mcp_export_dxf", "MCP Export DXF", "MCP Tools",
+               "80x50x5 plate, 2x Ø10 holes: top face -> DXF read back (mm, extents, circle centres); side face; "
+               "custom origin + xAxis; curved face and bad extension refused", order=44)
+def test_mcp_export_dxf(sw, template):
+    server = create_mcp_server()
+    R = server._route_tool
+    out = tempfile.mkdtemp(prefix="swmcp_dxf_test_")   # left in %TEMP%; never deleted by the test
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        for name, args in [("solidworks_new_part", {}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_rectangle", {"width": 80, "height": 50, "centerX": 0, "centerY": 0}),
+                           ("solidworks_create_extrusion", {"depth": 5}),
+                           ("solidworks_create_sketch", {"plane": "Front"}),
+                           ("solidworks_sketch_circle", {"radius": 5, "centerX": -20, "centerY": 0}),
+                           ("solidworks_sketch_circle", {"radius": 5, "centerX": 20, "centerY": 0}),
+                           ("solidworks_create_cut_extrusion", {"depth": 5, "endCondition": "THROUGH_ALL"})]:
+            _mcp_json(R(name, args))
+
+        def centres(r):
+            return sorted((c["center"][0], c["center"][1], c["diameter"]) for c in r.get("circles", []))
+
+        top = _mcp_json(R("solidworks_export_dxf", {"face": {"x": 0, "y": 15, "z": 5},
+                                                    "outputPath": os.path.join(out, "top.DXF")}))
+        check("top face: units mm, 4 lines", top.get("units") == "mm" and top["entities"].get("LINE") == 4, f"{top['entities']}")
+        check("top face: extents 0..80 x 0..50", top["extents_mm"] == {"min": [0, 0], "max": [80, 50]}, f"{top['extents_mm']}")
+        check("top face: holes at (20,25) and (60,25), Ø10", centres(top) == [(20, 25, 10), (60, 25, 10)], f"{centres(top)}")
+
+        side = _mcp_json(R("solidworks_export_dxf", {"face": {"x": -40, "y": 0, "z": 2.5},
+                                                     "outputPath": os.path.join(out, "side")}))
+        check("side face (-X): DXF X = model -Y, Y = +Z, 50 x 5",
+              side["dxfX_model"] == [0, -1, 0] and side["dxfY_model"] == [0, 0, 1]
+              and side["extents_mm"] == {"min": [0, 0], "max": [50, 5]} and side["path"].endswith("side.DXF"),
+              f"{side['dxfX_model']} {side['dxfY_model']} {side['extents_mm']}")
+
+        dat = _mcp_json(R("solidworks_export_dxf", {"face": {"x": 0, "y": 15, "z": 5}, "origin": {"x": -20, "y": 0, "z": 5},
+                                                    "xAxis": [0, -1, 0], "outputPath": os.path.join(out, "datum.DXF")}))
+        check("origin = left hole, DXF X = model -Y: holes at (0,0) and (0,40)",
+              centres(dat) == [(0, 0, 10), (0, 40, 10)], f"{centres(dat)}")
+
+        r = _call(server, "solidworks_export_dxf", {"face": {"x": -15, "y": 0, "z": 2.5}, "outputPath": os.path.join(out, "c.DXF")})
+        check("curved face refused", not _mcp_ok(r) and "not planar" in r, r[:100])
+        r = _call(server, "solidworks_export_dxf", {"face": {"x": 0, "y": 15, "z": 5}, "outputPath": os.path.join(out, "x.txt")})
+        check("non-DXF extension refused", not _mcp_ok(r), r[:100])
+        return ok
+    except Exception as e:
+        log(f"mcp_export_dxf FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+    finally:
+        _call(server, "solidworks_close_document", {})
+
+
 def _mcp_json(r):
     """Parse an MCP tool JSON result. Raises with the raw string on error returns."""
     if r.startswith("❌"):

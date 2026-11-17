@@ -225,6 +225,32 @@ class DocumentManagerTools:
                 }
             ),
             Tool(
+                name="solidworks_export_dxf",
+                description="Export one PLANAR face of the active part as a 1:1 DXF in millimetres (for laser / waterjet / CNC cutting): "
+                            "every edge loop of the face — outline, holes, cut-outs — becomes DXF geometry. The face is picked by a point on it "
+                            "(use find_face / get_faces for a sample point). DXF axes, viewed from OUTSIDE the face: by default u (DXF X) is model +X "
+                            "for top/bottom faces and horizontal for side faces, v (DXF Y) points 'up' (+Z for side faces, +Y for top/bottom), and the "
+                            "origin is the lower-left corner of the face's bounding box, so all coordinates are >= 0. Override with origin (a model point, "
+                            "e.g. a datum the machinist marks on the plate) and/or xAxis (model direction for DXF X). The file is read back: the result "
+                            "lists units, entity counts, circles (centre + diameter) and extents in DXF coordinates — check them against the design. "
+                            "Tested on SOLIDWORKS 2022 SP04.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "face": {"type": "object", "description": "A point on the planar face, model mm: {x, y, z}",
+                                 "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}},
+                                 "required": ["x", "y", "z"]},
+                        "outputPath": {"type": "string",
+                                       "description": "DXF file. Bare filename goes to workspace/dxf; '.DXF' added if no extension."},
+                        "origin": {"type": "object", "description": "Optional DXF origin as a model point, mm {x, y, z}",
+                                   "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}},
+                        "xAxis": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
+                                  "description": "Optional model direction of DXF X, e.g. [0, -1, 0]; projected onto the face plane."},
+                    },
+                    "required": ["face", "outputPath"],
+                },
+            ),
+            Tool(
                 name="solidworks_capture_views",
                 description="Export standard-view screenshots (PNG) of the active document. Each view is oriented (ShowNamedView2), zoomed to fit, and saved. Returns the file paths.",
                 inputSchema={
@@ -270,6 +296,7 @@ class DocumentManagerTools:
             "solidworks_activate_document": lambda: self.activate_document(args),
             "solidworks_close_document": lambda: self.close_document(args),
             "solidworks_capture_views": lambda: self.capture_views(args),
+            "solidworks_export_dxf": lambda: self.export_dxf(args),
             "solidworks_list_documents": lambda: self.list_documents(),
         }
         handler = dispatch.get(tool_name)
@@ -743,6 +770,103 @@ class DocumentManagerTools:
         "FRONT": 1, "BACK": 2, "LEFT": 3, "RIGHT": 4,
         "TOP": 5, "BOTTOM": 6, "ISOMETRIC": 7, "TRIMETRIC": 8, "DIMETRIC": 9,
     }
+
+    def export_dxf(self, args: dict) -> str:
+        """ExportToDWG2 action 2 (selected faces) with a 4x3 alignment
+        [origin(m), u, v, normal]. Probed on SW2022: action 3 (annotation
+        views) returns False; ModelName must be the path, or the title for an
+        unsaved part ('' fails); u x v = outward normal views the face from
+        outside."""
+        import math
+        from win32com.client import VARIANT
+        from .selection_helpers import _nearest_entity
+        from .hole_features import HoleFeatureTools
+
+        doc = self.connection.get_active_doc()
+        if doc is None or _doc_type(doc) != 1:
+            raise Exception("export_dxf needs an active PART document")
+        f = args["face"]
+        p_m = [float(f["x"]) / 1000, float(f["y"]) / 1000, float(f["z"]) / 1000]
+        face = _nearest_entity(doc, "face", *p_m, tol_m=1e-3)
+        if face is None:
+            raise Exception(f"No face within 1 mm of ({f['x']}, {f['y']}, {f['z']}) mm — use find_face/get_faces for a point on the face")
+        n = HoleFeatureTools._outward_normal(face)
+        if n is None:
+            raise Exception("The face at that point is not planar — only planar faces can be exported to DXF")
+
+        def unit(v):
+            m = math.sqrt(sum(c * c for c in v))
+            return [c / m for c in v]
+
+        def cross(a, b):
+            return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+        def dot(a, b):
+            return sum(x * y for x, y in zip(a, b))
+
+        if args.get("xAxis"):
+            x = [float(c) for c in args["xAxis"]]
+            u = [c - dot(x, n) * nc for c, nc in zip(x, n)]
+            if math.sqrt(dot(u, u)) < 1e-6:
+                raise Exception("xAxis is perpendicular to the face")
+            u = unit(u)
+            v = cross(n, u)
+        else:
+            up = [0.0, 1.0, 0.0] if abs(n[2]) > 0.9 else [0.0, 0.0, 1.0]
+            v = unit([c - dot(up, n) * nc for c, nc in zip(up, n)])
+            u = cross(v, n)               # u x v = n: viewed from outside
+        if args.get("origin"):
+            o = args["origin"]
+            origin = [float(o["x"]) / 1000, float(o["y"]) / 1000, float(o["z"]) / 1000]
+        else:
+            b = com_prop(face, "GetBox")   # face bbox corners -> lower-left in (u, v)
+            corners = [[b[i], b[j], b[k]] for i in (0, 3) for j in (1, 4) for k in (2, 5)]
+            a, c, h = min(dot(u, q) for q in corners), min(dot(v, q) for q in corners), dot(n, p_m)
+            origin = [a * uu + c * vv + h * nn for uu, vv, nn in zip(u, v, n)]
+
+        raw = Path(args["outputPath"].strip())
+        if not raw.is_absolute():
+            raw = WORKSPACE_DIR / "dxf" / raw
+        if not raw.suffix:
+            raw = raw.with_suffix(".DXF")
+        if raw.suffix.lower() != ".dxf":
+            raise Exception("outputPath must end in .DXF")
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        before = raw.stat().st_mtime if raw.exists() else None
+
+        doc.ClearSelection2(True)
+        if not face.Select4(False, doc.SelectionManager.CreateSelectData):
+            raise Exception("Could not select the face")
+        model = com_prop(doc, "GetPathName") or com_prop(doc, "GetTitle")
+        align = VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_R8, origin + u + v + n)
+        ok = doc.ExportToDWG2(str(raw), model, 2, True, align, False, False, 0,
+                              VARIANT(pythoncom.VT_DISPATCH, None))
+        doc.ClearSelection2(True)
+        if not ok or not raw.exists() or (before is not None and raw.stat().st_mtime == before):
+            raise Exception(f"ExportToDWG2 failed (returned {ok}) for {raw}")
+
+        info = {}
+        try:
+            import collections
+            import ezdxf
+            from ezdxf import bbox
+            d = ezdxf.readfile(str(raw))
+            msp = d.modelspace()
+            units = {4: "mm", 1: "inch", 6: "m"}.get(d.header.get("$INSUNITS"), d.header.get("$INSUNITS"))
+            circles = [{"center": [round(e.dxf.center[0], 3), round(e.dxf.center[1], 3)],
+                        "diameter": round(2 * e.dxf.radius, 3)} for e in msp.query("CIRCLE")]
+            ext = bbox.extents(msp)
+            info = {"units": units, "entities": dict(collections.Counter(e.dxftype() for e in msp)),
+                    "circles": circles[:100], "circleCount": len(circles),
+                    "extents_mm": {"min": [round(ext.extmin[0], 3), round(ext.extmin[1], 3)],
+                                   "max": [round(ext.extmax[0], 3), round(ext.extmax[1], 3)]} if ext.has_data else None}
+        except ImportError:
+            info = {"readBack": "skipped: install ezdxf to verify the DXF"}
+        r3 = lambda vec: [round(c, 4) for c in vec]
+        return self._json_result(
+            f"✓ DXF exported: {raw}" + (f" ({info.get('circleCount', 0)} circle(s), units {info.get('units')})" if "units" in info else ""),
+            path=str(raw), faceNormal=r3(n), dxfX_model=r3(u), dxfY_model=r3(v),
+            origin_mm=[round(c * 1000, 3) for c in origin], **info, type="dxf_export")
 
     def capture_views(self, args: dict) -> str:
         doc = self.connection.get_active_doc()
