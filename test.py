@@ -4335,15 +4335,23 @@ def test_mcp_volume_check_patterns(sw, template):
         sketch(("solidworks_sketch_rectangle", {"width": 20, "height": 10, "centerX": 50, "centerY": -35}))
         edge = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10}))
         check("seed half outside: -1000 of -2000", abs(vc(edge).get("delta_mm3", 0) + 1000) < 0.05, f"{vc(edge)}")
-        _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Right", "offset": 30}))
+        plane_id = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Right",
+                                                        "offset": 30}))["id"]
         doc = sw.ActiveDoc
-        plane_name = doc.FeatureByPositionReverse(0).Name
-        mir = _mcp_json(R("solidworks_mirror", {"features": [edge["id"]], "mirrorPlane": plane_name}))
+        # The plane is passed as the ref ID ref_plane returned (mirror used to
+        # accept only the raw name).
+        mir = _mcp_json(R("solidworks_mirror", {"features": [edge["id"]], "mirrorPlane": plane_id}))
         v = vc(mir)
         check("mirror copy fully inside: more than the seed, within its area x depth -- noted",
               mir["result"].startswith("✓") and v.get("check") == "more_than_expected_within_nominal"
               and abs(v.get("delta_mm3", 0) + 2000) < 0.05 and abs(v.get("expected_delta_mm3", 0) + 1000) < 0.05,
               f"{mir['result'][:220]} {v}")
+        try:
+            r = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": plane_id,
+                                                     "offset": 10}))["result"]
+        except Exception as e:
+            r = f"❌ {e}"
+        check("ref_plane offset from a plane given by its ref ID", r.startswith("✓"), r[:120])
 
         # Deliberately wrong: copies outside the body change nothing.
         off = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"},

@@ -18,6 +18,8 @@ English: [CHANGELOG.md](CHANGELOG.md).
   預期值是原特徵的變化 × 複本數（原特徵要是這次用這些工具做出來的）。
 - `solidworks_batch`：有呼叫執行了但回報 ⚠ 時，batch 的總結也會變成 ⚠ 並指出是哪一個（那個呼叫
   標 `"warning": true`）。以前只要每個呼叫都有執行，總結就是 ✓。
+- `mirror`（鏡射平面）、`draft`（中立面）、`ref_plane`（參考平面）接受 `ref_plane` 回傳的 ID
+  （`ref:Plane1`）；以前只接受平面名稱。
 - **啟動時檢查更新。** server 啟動後在背景問 GitHub 一次，你這份是不是舊版；是的話，這次
   使用的第一個工具回傳會附上提醒。只送出一個公開的 GitHub API 查詢，不會送出任何跟你、你的
   電腦或文件有關的資料。用 `SOLIDWORKS_MCP_UPDATE_CHECK=0` 關掉。詳見

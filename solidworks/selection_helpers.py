@@ -132,8 +132,14 @@ def _resolve_standard_from_features(features, key):
 
 
 def resolve_plane_feature(doc, plane_name):
-    """Resolve a standard semantic key or a custom plane name to IFeature."""
+    """Resolve a standard semantic key, a custom plane name, or the tracked
+    ID that ref_plane returns ('ref:Plane1') to IFeature."""
     requested = str(plane_name or "").strip()
+    # A ref ID is always "ref:<current SOLIDWORKS name>" (rename_feature
+    # re-keys it), so the name is what follows the prefix. Before this,
+    # mirror/draft/ref_plane rejected the ID with "Could not select ... plane".
+    if requested.startswith("ref:"):
+        requested = requested[len("ref:"):].strip()
     key = standard_plane_key(requested)
     if key:
         feature, strategy = _resolve_standard_from_features(

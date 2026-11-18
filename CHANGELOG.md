@@ -25,6 +25,9 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 - `solidworks_batch`: a call that ran but came back ⚠ now makes the batch
   summary ⚠ as well and is named there (`"warning": true` on that call). The
   summary used to read ✓ whenever every call ran.
+- `mirror` (mirror plane), `draft` (neutral plane) and `ref_plane` (reference
+  plane) accept the ID `ref_plane` returns (`ref:Plane1`); they used to accept
+  only the plane's name.
 - **Update check at start-up.** The server asks GitHub once, in the background,
   whether your copy is behind, and the first tool result of the session says so.
   One request to the public GitHub API; nothing about you, your machine or your
