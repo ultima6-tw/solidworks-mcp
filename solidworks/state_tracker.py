@@ -73,6 +73,10 @@ class FeatureRecord:
     feature_type: str
     source_sketch: Optional[str] = None
     parameters: Dict = field(default_factory=dict)
+    # {"delta": mm3 this feature changed the solid by, "nominal": profile
+    # area x depth or None} -- set by the server's volume check, read when
+    # the feature is patterned/mirrored (solidworks/volume_check.py)
+    volume_change: Optional[Dict] = None
 
 
 @dataclass

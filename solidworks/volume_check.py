@@ -117,19 +117,11 @@ def _absorbed_sketch(feat):
     return None
 
 
-def nominal_change_mm3(doc, tool, args, new_feature_names):
-    """(nominal |change| in mm3, None) or (None, reason it was not computed)."""
-    if tool not in ("solidworks_create_extrusion", "solidworks_create_cut_extrusion"):
-        return None, None
-    args = args or {}
-    if str(args.get("endCondition", "BLIND")).upper() != "BLIND":
-        return None, "not computed for THROUGH_ALL (depth set by the body)"
-    try:
-        depth = float(args["depth"])
-    except Exception:
-        return None, "no depth"
-    # The new feature is the one new top-level feature that is not a sketch
-    # (the sketch existed before; a cut's failed first attempt is deleted).
+PATTERN_TOOLS = ("solidworks_linear_pattern", "solidworks_circular_pattern", "solidworks_mirror")
+
+
+def new_solid_features(doc, new_feature_names):
+    """The new top-level features that are not sketches, in tree order."""
     feats = []
     f = doc.FirstFeature
     while f is not None:
@@ -140,29 +132,99 @@ def nominal_change_mm3(doc, tool, args, new_feature_names):
         except Exception:
             pass
         f = f.GetNextFeature
-    if len(feats) != 1:
-        return None, "could not tell which new feature to measure"
-    sketch = _absorbed_sketch(feats[0])
-    if sketch is None:
-        return None, "sketch of the new feature not found"
-    area = sketch_area_mm2(doc, sketch)
-    if area is None:
-        return None, "SOLIDWORKS could not compute the sketch area"
-    return area * depth, None
+    return feats
 
 
-def evaluate(tool, args, before, after, nominal=None, nominal_reason=None):
+def copies(tool, args):
+    """Number of copies a pattern/mirror adds besides the seed. SOLIDWORKS
+    counts the seed in a pattern's instance count."""
+    args = args or {}
+    try:
+        if tool == "solidworks_linear_pattern":
+            n = int(args.get("count1", 1))
+            n2 = int(args.get("count2", 1) or 1)
+            return n * max(n2, 1) - 1
+        if tool == "solidworks_circular_pattern":
+            return int(args.get("count", 1)) - 1
+        if tool == "solidworks_mirror":
+            return 1
+    except Exception:
+        return None
+    return None
+
+
+def _seed_name(ref):
+    s = str(ref)
+    return s.split(":", 1)[1] if s.startswith("feat:") else s
+
+
+def expectation(doc, tool, args, new_feature_names, seed_changes=None):
+    """What the change should be, or why that is not known.
+    Returns (exp, None) with exp = {"delta": signed expected change,
+    "upper": largest plausible |change| or None, "basis": text}, or
+    (None, reason). seed_changes maps feature name -> {"delta", "nominal"}
+    recorded when those features were made in this session."""
+    args = args or {}
+    if tool in ("solidworks_create_extrusion", "solidworks_create_cut_extrusion"):
+        if str(args.get("endCondition", "BLIND")).upper() != "BLIND":
+            return None, "not computed for THROUGH_ALL (depth set by the body)"
+        try:
+            depth = float(args["depth"])
+        except Exception:
+            return None, "no depth"
+        # The new feature is the one new top-level feature that is not a
+        # sketch (the sketch existed before; a cut's failed first attempt is
+        # deleted).
+        feats = new_solid_features(doc, new_feature_names)
+        if len(feats) != 1:
+            return None, "could not tell which new feature to measure"
+        sketch = _absorbed_sketch(feats[0])
+        if sketch is None:
+            return None, "sketch of the new feature not found"
+        area = sketch_area_mm2(doc, sketch)
+        if area is None:
+            return None, "SOLIDWORKS could not compute the sketch area"
+        sign = expected_sign(tool, args)
+        return {"delta": sign * area * depth, "upper": area * depth,
+                "basis": "profile area x depth"}, None
+
+    if tool in PATTERN_TOOLS:
+        k = copies(tool, args)
+        if not k or k < 1:
+            return None, "could not tell how many copies"
+        seeds = [_seed_name(n) for n in (args.get("features") or [])]
+        if not seeds:
+            return None, "no seed features"
+        known = [(seed_changes or {}).get(s) for s in seeds]
+        if any(r is None for r in known):
+            missing = [s for s, r in zip(seeds, known) if r is None]
+            return None, (f"seed change not known for {missing} (made before this session, "
+                          f"outside these tools, or renamed)")
+        seed_delta = sum(r["delta"] for r in known)
+        if abs(seed_delta) < ZERO_TOL_MM3:
+            return None, "the seed itself did not change the volume"
+        upper = None
+        if all(r.get("nominal") is not None for r in known):
+            upper = sum(abs(r["nominal"]) for r in known) * k
+        return {"delta": seed_delta * k, "upper": upper,
+                "basis": f"seed change {seed_delta:.3f} mm3 x {k} cop{'y' if k == 1 else 'ies'}"}, None
+    return None, None
+
+
+def evaluate(tool, args, before, after, exp=None, reason=None):
     """Build the volumeChange record. Returns (record, warning text or None,
     info text or None)."""
     delta = after - before
     rec = {"before_mm3": round(before, 3), "after_mm3": round(after, 3),
            "delta_mm3": round(delta, 3)}
     sign = expected_sign(tool, args)
-    if nominal is not None:
-        rec["expected_delta_mm3"] = round(nominal * (sign or 1), 3)
-        rec["expected_basis"] = "profile area x depth"
-    elif nominal_reason:
-        rec["expected_basis"] = nominal_reason
+    if exp is not None:
+        rec["expected_delta_mm3"] = round(exp["delta"], 3)
+        rec["expected_basis"] = exp["basis"]
+        if sign == 0:     # pattern/mirror: the seed's sign
+            sign = 1 if exp["delta"] > 0 else -1
+    elif reason:
+        rec["expected_basis"] = reason
 
     if abs(delta) < ZERO_TOL_MM3:
         if sign is not None:
@@ -176,23 +238,37 @@ def evaluate(tool, args, before, after, nominal=None, nominal_reason=None):
         want = "add" if sign > 0 else "remove"
         return rec, (f"this tool should {want} material but the volume went "
                      f"{'down' if delta < 0 else 'up'} by {abs(delta):.3f} mm3 -- check the geometry"), None
-    if nominal is not None:
-        tol = max(ZERO_TOL_MM3, REL_TOL * nominal)
-        if abs(abs(delta) - nominal) <= tol:
-            rec["check"] = "matches_expected"
-            return rec, None, None
-        if abs(delta) > nominal + tol:
-            rec["check"] = "more_than_expected"
-            return rec, (f"the volume changed by {abs(delta):.3f} mm3, more than profile area x depth "
-                         f"= {nominal:.3f} mm3 -- check the geometry"), None
-        rec["check"] = "less_than_expected"
-        what = ("part of the cut is outside the body"
-                if tool == "solidworks_create_cut_extrusion"
-                else "it overlaps existing material")
-        return rec, None, (f"volume changed by {abs(delta):.3f} mm3, less than profile area x depth "
-                           f"= {nominal:.3f} mm3 (normal when {what})")
-    rec["check"] = "changed"
-    return rec, None, None
+    if exp is None:
+        rec["check"] = "changed"
+        return rec, None, None
+
+    want = abs(exp["delta"])
+    upper = exp.get("upper")
+    tol = max(ZERO_TOL_MM3, REL_TOL * want)
+    got = abs(delta)
+    if abs(got - want) <= tol:
+        rec["check"] = "matches_expected"
+        return rec, None, None
+    is_pattern = tool in PATTERN_TOOLS
+    if got > want + tol:
+        if is_pattern and upper is not None and got <= upper + max(ZERO_TOL_MM3, REL_TOL * upper):
+            rec["check"] = "more_than_expected_within_nominal"
+            return rec, None, (f"volume changed by {got:.3f} mm3, more than {exp['basis']} = "
+                               f"{want:.3f} mm3 but within the seed's profile area x depth per copy "
+                               f"({upper:.3f} mm3) -- normal when the seed was partly outside the body "
+                               f"or overlapping material and the copies are not")
+        rec["check"] = "more_than_expected"
+        return rec, (f"the volume changed by {got:.3f} mm3, more than {exp['basis']} "
+                     f"= {want:.3f} mm3 -- check the geometry"), None
+    rec["check"] = "less_than_expected"
+    if is_pattern:
+        what = "copies overlap each other or existing material, or fall partly outside the body"
+    elif tool == "solidworks_create_cut_extrusion":
+        what = "part of the cut is outside the body"
+    else:
+        what = "it overlaps existing material"
+    return rec, None, (f"volume changed by {got:.3f} mm3, less than {exp['basis']} "
+                       f"= {want:.3f} mm3 (normal when {what})")
 
 
 def annotate(out, rec, warning, info):

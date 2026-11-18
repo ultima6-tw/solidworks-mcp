@@ -129,6 +129,10 @@ class SolidWorksMCPServer:
                     "returned ID or measurement, split the batch there. On error: "
                     "stops by default (stopOnError=false to continue); the response "
                     "reports each call's result so you know exactly what applied. "
+                    "A call that ran but came back ⚠ (e.g. the feature or volume "
+                    "check found it did not do what was asked) does not stop the "
+                    "batch; it is marked \"warning\": true and named in the summary, "
+                    "which is then ⚠ too -- read that call's result. "
                     "Do NOT put look_at_model in a batch — its screenshot is only "
                     "attached as an image when called standalone."
                 ),
@@ -261,16 +265,31 @@ class SolidWorksMCPServer:
 
     def _apply_volume_check(self, name, arguments, doc, names_before, vol_before, out):
         """Report the solid's volume before/after; ⚠ when it did not change or
-        changed the wrong way (or, for a BLIND extrude/cut, more than profile
-        area x depth)."""
+        changed the wrong way, or more than expected (BLIND extrude/cut:
+        profile area x depth; pattern/mirror: the seeds' recorded change x
+        copies). Each new feature's change is kept on its tracker record so a
+        later pattern/mirror of it has an expected value."""
         try:
             vol_after = volume_check.total_volume_mm3(doc)
             if vol_after is None:
                 return out
             new_names = feature_names(doc) - set(names_before)
-            nominal, reason = volume_check.nominal_change_mm3(doc, name, arguments, new_names)
+            records = {}
+            if self.tracker:
+                try:
+                    records = {r.sw_name: r for r in self.tracker._scope().features.values()}
+                except Exception:
+                    records = {}
+            seed_changes = {n: r.volume_change for n, r in records.items() if r.volume_change}
+            exp, reason = volume_check.expectation(doc, name, arguments, new_names, seed_changes)
             rec, warning, info = volume_check.evaluate(name, arguments, vol_before, vol_after,
-                                                       nominal, reason)
+                                                       exp, reason)
+            new_feats = volume_check.new_solid_features(doc, new_names)
+            if len(new_feats) == 1 and new_feats[0].Name in records:
+                nominal = (exp or {}).get("upper") if name in (
+                    "solidworks_create_extrusion", "solidworks_create_cut_extrusion") else None
+                records[new_feats[0].Name].volume_change = {"delta": vol_after - vol_before,
+                                                            "nominal": nominal}
         except Exception as e:
             logger.warning(f"volume check after {name} failed: {e}")
             return out
@@ -323,11 +342,18 @@ class SolidWorksMCPServer:
         stop_on_error = arguments.get("stopOnError", True)
         results = []
         ok_count = 0
+        warned = []
         for i, call in enumerate(calls):
             tool = call.get("tool") or ""
             try:
                 out = self._route_tool(tool, call.get("args") or {})
-                results.append({"i": i, "tool": tool, "ok": True, "result": out})
+                entry = {"i": i, "tool": tool, "ok": True, "result": out}
+                # A call that ran but came back ⚠ (feature/volume check) must
+                # show in the summary too -- an agent may read only that line.
+                if self._result_is_warning(out):
+                    entry["warning"] = True
+                    warned.append(i)
+                results.append(entry)
                 ok_count += 1
             except Exception as e:
                 results.append({"i": i, "tool": tool, "ok": False,
@@ -337,8 +363,27 @@ class SolidWorksMCPServer:
                         results.append({"i": j, "tool": calls[j].get("tool") or "",
                                         "ok": False, "error": "skipped (earlier call failed)"})
                     break
-        summary = f"{'✓' if ok_count == len(calls) else '⚠'} batch: {ok_count}/{len(calls)} calls succeeded"
+        clean = ok_count == len(calls) and not warned
+        summary = f"{'✓' if clean else '⚠'} batch: {ok_count}/{len(calls)} calls succeeded"
+        if warned:
+            many = len(warned) > 1
+            summary += (f", {len(warned)} with a warning (call{'s' if many else ''} "
+                        f"{', '.join(str(i) for i in warned)}) -- read "
+                        f"{'those calls’ results' if many else 'that call’s result'}")
         return _json.dumps({"result": summary, "calls": results})
+
+    @staticmethod
+    def _result_is_warning(out) -> bool:
+        """True when a tool result (JSON or plain text) is marked ⚠."""
+        import json as _json
+        text = out if isinstance(out, str) else ""
+        try:
+            data = _json.loads(text)
+            if isinstance(data, dict) and isinstance(data.get("result"), str):
+                text = data["result"]
+        except Exception:
+            pass
+        return text.lstrip().startswith("⚠")
 
 
 async def main():

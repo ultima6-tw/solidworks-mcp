@@ -3360,6 +3360,18 @@ def test_mcp_batch(sw, template):
         check("build batch 4/4", all(c["ok"] for c in b["calls"]) and b["result"].startswith("✓"), b["result"])
         check("box volume", abs(_volume(server) - 24000) < 0.5)
 
+        # A call that runs but comes back ⚠ (a boss drawn inside the body adds
+        # nothing -- volume check) must make the summary ⚠ too, and say which.
+        b = _mcp_json(R("solidworks_batch", {"calls": [
+            {"tool": "solidworks_create_sketch", "args": {"plane": "Front"}},
+            {"tool": "solidworks_sketch_rectangle", "args": {"width": 10, "height": 10, "centerX": 0, "centerY": 0}},
+            {"tool": "solidworks_create_extrusion", "args": {"depth": 5}},
+        ]}))
+        check("call with a warning: summary ⚠ and names it, the call is marked",
+              all(c["ok"] for c in b["calls"]) and b["result"].startswith("⚠") and "call 2" in b["result"]
+              and b["calls"][2].get("warning") is True
+              and not any(c.get("warning") for c in b["calls"][:2]), b["result"])
+
         bad = [{"tool": "solidworks_get_body_info"},
                {"tool": "solidworks_suppress_feature", "args": {"feature": "NoSuchFeature", "suppress": True}},
                {"tool": "solidworks_get_body_info"}]
@@ -4253,6 +4265,128 @@ def test_mcp_volume_check(sw, template):
         return ok
     except Exception as e:
         log(f"mcp_volume_check FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
+@register_test("mcp_volume_check_patterns", "MCP Volume Check: Patterns And Mirror", "MCP Tools",
+               "Pattern/mirror expected change = the seed's recorded change x copies: a linear pattern "
+               "(1 and 2 directions) and a mirror match; overlapping copies are noted; a mirror copy of a seed "
+               "that was half outside the body may change more than the seed, up to its profile area x depth, "
+               "and is noted; copies outside the body are flagged; a seed made outside the tools has no "
+               "expected value; more than the seeds' profile area x depth is flagged", order=54)
+def test_mcp_volume_check_patterns(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+
+        def sketch(*shapes):
+            _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))
+            for tool, args in shapes:
+                _mcp_json(R(tool, args))
+
+        def vc(res):
+            return res.get("volumeChange") or {}
+
+        R("solidworks_new_part", {})
+        sketch(("solidworks_sketch_rectangle", {"width": 100, "height": 100, "centerX": 0, "centerY": 0}))
+        _mcp_json(R("solidworks_create_extrusion", {"depth": 10}))
+        hole_v = math.pi * 25 * 10
+        sketch(("solidworks_sketch_circle", {"radius": 5, "centerX": 0, "centerY": 0}))
+        hole = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10}))["id"]
+
+        # Both directions along X stay inside the 100 x 100 block, so the
+        # result does not depend on which way the pattern runs.
+        lp = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"},
+                                                       "spacing1": 20, "count1": 3}))
+        v = vc(lp)
+        check("linear pattern, 3 instances: expected = seed x 2 copies, matches",
+              lp["result"].startswith("✓") and v.get("check") == "matches_expected"
+              and abs(v.get("expected_delta_mm3", 0) + 2 * hole_v) < 0.05, f"{v}")
+
+        small_v = math.pi * 9 * 10
+        sketch(("solidworks_sketch_circle", {"radius": 3, "centerX": 0, "centerY": 30}))
+        small = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10}))["id"]
+        lp2 = _mcp_json(R("solidworks_linear_pattern", {"features": [small], "direction1": {"axis": "X"},
+                                                        "spacing1": 20, "count1": 2,
+                                                        "direction2": {"axis": "Y"}, "spacing2": 10,
+                                                        "count2": 2}))
+        v = vc(lp2)
+        check("2-direction pattern 2x2: expected = seed x 3 copies, matches",
+              lp2["result"].startswith("✓") and v.get("check") == "matches_expected"
+              and abs(v.get("expected_delta_mm3", 0) + 3 * small_v) < 0.05, f"{lp2['result'][:100]} {v}")
+
+        over = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "Y"},
+                                                         "spacing1": 5, "count1": 3}))
+        v = vc(over)
+        check("copies overlapping each other: noted, not flagged",
+              over["result"].startswith("✓") and v.get("check") == "less_than_expected"
+              and "overlap" in over["result"], f"{over['result'][:200]} {v}")
+
+        # Seed half outside the right edge (removes 1000 of its 2000 mm3);
+        # its mirror about x = 30 lands fully inside and removes 2000.
+        sketch(("solidworks_sketch_rectangle", {"width": 20, "height": 10, "centerX": 50, "centerY": -35}))
+        edge = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10}))
+        check("seed half outside: -1000 of -2000", abs(vc(edge).get("delta_mm3", 0) + 1000) < 0.05, f"{vc(edge)}")
+        _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Right", "offset": 30}))
+        doc = sw.ActiveDoc
+        plane_name = doc.FeatureByPositionReverse(0).Name
+        mir = _mcp_json(R("solidworks_mirror", {"features": [edge["id"]], "mirrorPlane": plane_name}))
+        v = vc(mir)
+        check("mirror copy fully inside: more than the seed, within its area x depth -- noted",
+              mir["result"].startswith("✓") and v.get("check") == "more_than_expected_within_nominal"
+              and abs(v.get("delta_mm3", 0) + 2000) < 0.05 and abs(v.get("expected_delta_mm3", 0) + 1000) < 0.05,
+              f"{mir['result'][:220]} {v}")
+
+        # Deliberately wrong: copies outside the body change nothing.
+        off = _mcp_json(R("solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"},
+                                                        "spacing1": 150, "count1": 2}))
+        check("copies outside the body: warning, volume did not change",
+              off["result"].startswith("⚠") and vc(off).get("check") == "no_change", f"{off['result'][:200]}")
+
+        # A seed made outside the tools (raw COM) has no recorded change.
+        sk = _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))["id"].split(":", 1)[1]
+        _mcp_json(R("solidworks_sketch_circle", {"radius": 4, "centerX": -30, "centerY": -20}))
+        R("solidworks_exit_sketch", {})
+        doc.ClearSelection2(True)
+        doc.FeatureByName(sk).Select2(False, 0)
+        raw = doc.FeatureManager.FeatureCut4(True, False, True, 0, 0, 0.01, 0.0, False, False, False, False,
+                                             0.0, 0.0, False, False, False, False, False, False, True, False,
+                                             True, False, 0, 0.0, False, False)
+        if raw is None:
+            check("raw COM seed cut created", False, "FeatureCut4 returned None")
+        else:
+            unk = _mcp_json(R("solidworks_linear_pattern", {"features": [raw.Name], "direction1": {"axis": "Y"},
+                                                            "spacing1": 12, "count1": 2}))
+            v = vc(unk)
+            check("seed made outside the tools: no expected value, change reported",
+                  unk["result"].startswith("✓") and v.get("check") == "changed"
+                  and "not known" in v.get("expected_basis", ""), f"{v}")
+
+        # More than the seeds' profile area x depth cannot be made on purpose:
+        # run the check on the real 3-instance pattern with a made-up "before".
+        from solidworks.feature_errors import feature_names
+        from solidworks.volume_check import total_volume_mm3
+        lp_name = lp["id"].split(":", 1)[1]
+        before_names = feature_names(doc) - {lp_name}
+        r = _mcp_json(server._apply_volume_check(
+            "solidworks_linear_pattern", {"features": [hole], "direction1": {"axis": "X"}, "spacing1": 20,
+                                          "count1": 3}, doc, before_names, total_volume_mm3(doc) + 5000,
+            '{"result": "✓ x"}'))
+        check("pattern that removed more than seed area x depth x copies: flagged",
+              r["result"].startswith("⚠") and r["volumeChange"]["check"] == "more_than_expected",
+              r["result"][:200])
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_volume_check_patterns FAILED: {e}", "ERROR")
         traceback.print_exc()
         return False
 
