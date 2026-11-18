@@ -14,7 +14,7 @@ from pathlib import Path
 import pythoncom
 
 from solidworks.feature_errors import check_new_features, describe, feature_names
-from solidworks import update_check
+from solidworks import update_check, volume_check
 from solidworks.com_utils import com_prop
 from solidworks import (
     SolidWorksConnection,
@@ -236,6 +236,17 @@ class SolidWorksMCPServer:
                 logger.debug(f"feature snapshot before {name} skipped: {e}")
                 names_before = None
 
+        # Tools that should change the solid also get the volume check
+        # (solidworks/volume_check.py): an error code does not catch a feature
+        # that silently did nothing. Parts only.
+        vol_before = None
+        if name in volume_check.VOLUME_TOOLS and names_before is not None:
+            try:
+                if int(com_prop(doc, "GetType")) == 1:
+                    vol_before = volume_check.total_volume_mm3(doc)
+            except Exception as e:
+                logger.debug(f"volume before {name} skipped: {e}")
+
         # Modeling module needs a reference to sketching tools
         if module is self.modeling:
             out = module.execute(name, arguments, self.sketching)
@@ -243,7 +254,29 @@ class SolidWorksMCPServer:
             out = module.execute(name, arguments)
         if names_before is None:
             return out
-        return self._apply_feature_check(name, doc, names_before, out)
+        out = self._apply_feature_check(name, doc, names_before, out)
+        if vol_before is None:
+            return out
+        return self._apply_volume_check(name, arguments, doc, names_before, vol_before, out)
+
+    def _apply_volume_check(self, name, arguments, doc, names_before, vol_before, out):
+        """Report the solid's volume before/after; ⚠ when it did not change or
+        changed the wrong way (or, for a BLIND extrude/cut, more than profile
+        area x depth)."""
+        try:
+            vol_after = volume_check.total_volume_mm3(doc)
+            if vol_after is None:
+                return out
+            new_names = feature_names(doc) - set(names_before)
+            nominal, reason = volume_check.nominal_change_mm3(doc, name, arguments, new_names)
+            rec, warning, info = volume_check.evaluate(name, arguments, vol_before, vol_after,
+                                                       nominal, reason)
+        except Exception as e:
+            logger.warning(f"volume check after {name} failed: {e}")
+            return out
+        if warning:
+            logger.warning(f"Volume check after {name}: {warning} ({rec})")
+        return volume_check.annotate(out, rec, warning, info)
 
     def _apply_feature_check(self, name, doc, names_before, out):
         """Errors: the feature is removed and the call fails. Warnings: the

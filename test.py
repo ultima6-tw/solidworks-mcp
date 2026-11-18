@@ -4148,6 +4148,115 @@ def test_mcp_feature_error_check(sw, template):
         return False
 
 
+@register_test("mcp_volume_check", "MCP Volume Change Check", "MCP Tools",
+               "Server-level volume check: a boss drawn inside the body (SW reports success, no error code, "
+               "adds nothing) comes back marked with a warning; BLIND extrude/cut report profile area x depth "
+               "as the expected change and match it; a cut partly outside the body and a boss overlapping it "
+               "are noted, not flagged; wrong sign and more-than-expected are flagged; THROUGH_ALL and "
+               "reference geometry are handled", order=53)
+def test_mcp_volume_check(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+
+        def sketch(*shapes):
+            _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))
+            for tool, args in shapes:
+                _mcp_json(R(tool, args))
+
+        def vc(res):
+            return res.get("volumeChange") or {}
+
+        R("solidworks_new_part", {})
+        sketch(("solidworks_sketch_rectangle", {"width": 40, "height": 30, "centerX": 0, "centerY": 0}))
+        base = _mcp_json(R("solidworks_create_extrusion", {"depth": 10}))
+        v = vc(base)
+        check("base boss: expected = area x depth = 12000, matches",
+              base["result"].startswith("✓") and v.get("check") == "matches_expected"
+              and abs(v.get("expected_delta_mm3", 0) - 12000) < 0.01 and abs(v.get("delta_mm3", 0) - 12000) < 0.01,
+              f"{base['result'][:80]} {v}")
+
+        # The deliberately wrong one: a boss drawn into the body adds nothing,
+        # and SOLIDWORKS still returns a feature with no error code.
+        sketch(("solidworks_sketch_rectangle", {"width": 10, "height": 10, "centerX": 0, "centerY": 0}))
+        inside = _mcp_json(R("solidworks_create_extrusion", {"depth": 5}))
+        check("boss inside the body: warning, volume did not change",
+              inside["result"].startswith("⚠") and vc(inside).get("check") == "no_change"
+              and "did not change" in inside["result"], f"{inside['result'][:160]} {vc(inside)}")
+
+        sketch(("solidworks_sketch_circle", {"radius": 5, "centerX": 0, "centerY": 0}))
+        hole = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 5}))
+        v = vc(hole)
+        want = -math.pi * 25 * 5
+        check("blind cut inside the body: expected = -(area x depth), matches",
+              hole["result"].startswith("✓") and v.get("check") == "matches_expected"
+              and abs(v.get("delta_mm3", 0) - want) < 0.05 and abs(v.get("expected_delta_mm3", 0) - want) < 0.05,
+              f"{v}")
+
+        sketch(("solidworks_sketch_rectangle", {"width": 20, "height": 10, "centerX": 20, "centerY": 0}))
+        edge = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 5}))
+        v = vc(edge)
+        check("cut half outside the body: noted (500 of 1000), not flagged",
+              edge["result"].startswith("✓") and v.get("check") == "less_than_expected"
+              and abs(v.get("delta_mm3", 0) + 500) < 0.05 and "outside the body" in edge["result"],
+              f"{edge['result'][:160]} {v}")
+
+        sketch(("solidworks_sketch_rectangle", {"width": 20, "height": 10, "centerX": -20, "centerY": 0}))
+        over = _mcp_json(R("solidworks_create_extrusion", {"depth": 10}))
+        v = vc(over)
+        check("boss half overlapping the body: noted (1000 of 2000), not flagged",
+              over["result"].startswith("✓") and v.get("check") == "less_than_expected"
+              and abs(v.get("delta_mm3", 0) - 1000) < 0.05 and "overlaps" in over["result"],
+              f"{over['result'][:160]} {v}")
+
+        sketch(("solidworks_sketch_rectangle", {"width": 4, "height": 4, "centerX": 0, "centerY": 10}))
+        thru = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 1, "endCondition": "THROUGH_ALL"}))
+        v = vc(thru)
+        check("THROUGH_ALL cut: no expected value, change reported",
+              thru["result"].startswith("✓") and v.get("check") == "changed"
+              and abs(v.get("delta_mm3", 0) + 160) < 0.05 and "THROUGH_ALL" in v.get("expected_basis", ""),
+              f"{v}")
+
+        plane = _mcp_json(R("solidworks_ref_plane", {"type": "OFFSET", "referencePlane": "Front", "offset": 30}))
+        check("reference plane: no volume record", "volumeChange" not in plane, plane["result"][:80])
+
+        # Wrong sign and more-than-expected cannot be produced on purpose with
+        # the real tools, so the check runs on the real document and its newest
+        # boss (area 200 mm2, really +1000 mm3) with a made-up "before".
+        from solidworks.feature_errors import feature_names
+        doc = sw.ActiveDoc
+        boss_name = over["id"].split(":", 1)[1]
+        before_names = feature_names(doc) - {boss_name}
+        from solidworks.volume_check import total_volume_mm3
+        now = total_volume_mm3(doc)
+        out = '{"result": "✓ x"}'
+        r = _mcp_json(server._apply_volume_check("solidworks_create_extrusion", {"depth": 10}, doc,
+                                                 before_names, now + 100, out))
+        check("boss that lowered the volume: flagged wrong sign",
+              r["result"].startswith("⚠") and r["volumeChange"]["check"] == "wrong_sign", r["result"][:160])
+        r = _mcp_json(server._apply_volume_check("solidworks_create_extrusion", {"depth": 2}, doc,
+                                                 before_names, now - 1000, out))
+        check("boss that added more than area x depth: flagged",
+              r["result"].startswith("⚠") and r["volumeChange"]["check"] == "more_than_expected"
+              and abs(r["volumeChange"]["expected_delta_mm3"] - 400) < 0.01, r["result"][:160])
+        r = _mcp_json(server._apply_volume_check("solidworks_combine_bodies", {}, doc, before_names, now, out))
+        check("report-only tool with no change: not flagged",
+              r["result"] == "✓ x" and r["volumeChange"]["check"] == "no_change_allowed", f"{r}")
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_volume_check FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "

@@ -57,14 +57,14 @@ python test.py                              # everything
 
 ## What is covered
 
-86 tests in 6 categories (`python test.py --list` for the full list):
+87 tests in 6 categories (`python test.py --list` for the full list):
 
 | Category | Tests | What they check |
 |---|---|---|
 | Basic | 3 | Every `.py` file compiles and the bridge modules import, and the start-up update check behaves (both without SOLIDWORKS); a cube built end to end |
 | Sketch Tools | 12 | Each sketch entity, dimensions, constraints, construction geometry |
 | Feature Tools | 9 | Cut-extrude, fillet, chamfer, shell, revolve, loft, reference plane, mass properties, feature list |
-| MCP Tools | 53 | The tools as an AI calls them (through the server's tool router), with the results checked against expected geometry, volumes, IDs and files. One of them (`mcp_stdio_transport`) starts `server.py` as a real MCP stdio server and sends the calls through the pipe, because a hang that only happens over stdio cannot show up in the others |
+| MCP Tools | 54 | The tools as an AI calls them (through the server's tool router), with the results checked against expected geometry, volumes, IDs and files. One of them (`mcp_stdio_transport`) starts `server.py` as a real MCP stdio server and sends the calls through the pipe, because a hang that only happens over stdio cannot show up in the others |
 | Assembly | 8 | Save / activate / close documents, inserting components, mates, interference and suppression, per-document state, parametric changes, bounding box |
 | Integration | 1 | A longer sequence of cut-extrudes on one body |
 

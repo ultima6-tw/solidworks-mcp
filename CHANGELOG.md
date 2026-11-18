@@ -11,6 +11,15 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 
 ## 2026-11-18
 
+- **Update recommended — tools that change the solid report its volume
+  before and after** (`volumeChange`). A feature can come back with no error
+  code and still do nothing: seen on SOLIDWORKS 2022, a boss drawn entirely
+  inside the body reported ✓ and added nothing. Now no change, or a change the
+  wrong way (a boss that removed material), turns ✓ into ⚠. For a BLIND
+  extrusion or cut the tool also works out the expected change itself
+  (profile area from SOLIDWORKS × depth) and flags a change larger than that;
+  a smaller one is only noted, since a cut partly outside the body or a boss
+  overlapping existing material is normal.
 - **Update check at start-up.** The server asks GitHub once, in the background,
   whether your copy is behind, and the first tool result of the session says so.
   One request to the public GitHub API; nothing about you, your machine or your
