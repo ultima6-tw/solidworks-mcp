@@ -11,6 +11,11 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 
 ## 2026-11-19
 
+- `create_extrusion` THROUGH_ALL with no body in that direction: in some
+  SOLIDWORKS sessions SOLIDWORKS returns nothing instead of a feature in
+  error, and the tool then said only "Failed to create extrusion". It now
+  says what it says in the other case: no end was found in that direction,
+  use the other direction or BLIND.
 - `recognize_features`: when SOLIDWORKS reports FeatureWorks loaded but does
   not actually start it (seen on SOLIDWORKS 2022), the error now says so and
   asks to tick FeatureWorks in Tools › Add-Ins. It used to say a Professional

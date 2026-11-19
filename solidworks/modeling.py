@@ -398,6 +398,14 @@ class ModelingTools:
         )
         
         if not feature:
+            if end_type == 1:
+                # Probed on SW2022: a THROUGH_ALL boss with no body in its
+                # direction returns None in some SOLIDWORKS sessions and a
+                # feature in error 31 in others (handled below) -- same cause.
+                raise Exception(
+                    "SolidWorks could not create the THROUGH_ALL extrusion: it found no "
+                    "end for it (no body in that direction). Use the other direction "
+                    "(reverse) or BLIND.")
             raise Exception("Failed to create extrusion")
 
         # A feature can come back in error instead of None: probed on SW2022,

@@ -4598,9 +4598,9 @@ def test_mcp_handle_cost(sw, template):
 
 
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
-               "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
-               "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "
-               "unchanged", order=49)
+               "A THROUGH_ALL boss pointing away from the body is reported as an error that says why -- SW "
+               "returns a feature in error 31 that adds nothing in some sessions and None in others, both "
+               "accepted -- no feature is left, its sketch is kept; the body is unchanged", order=49)
 def test_mcp_extrusion_error(sw, template):
     try:
         ok = True
@@ -4623,7 +4623,11 @@ def test_mcp_extrusion_error(sw, template):
             r = R("solidworks_create_extrusion", {"depth": 10, "endCondition": "THROUGH_ALL", "reverse": True})
         except Exception as e:
             r = f"❌ {e}"
-        check("away-from-body THROUGH_ALL boss reported as an error", r.startswith("❌") and "31" in r, r[:160])
+        as_31 = "31" in r
+        as_none = "found no end for it" in r
+        log(f"SOLIDWORKS returned {'a feature in error 31' if as_31 else 'None' if as_none else 'something else'}")
+        check("away-from-body THROUGH_ALL boss reported as an error that says why",
+              r.startswith("❌") and (as_31 or as_none), r[:160])
         doc = sw.ActiveDoc
         names = [f.Name for f in (doc.FeatureManager.GetFeatures(True) or [])]
         check("the feature in error was removed",

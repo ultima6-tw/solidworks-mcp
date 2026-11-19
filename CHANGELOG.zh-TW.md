@@ -10,6 +10,9 @@ English: [CHANGELOG.md](CHANGELOG.md).
 
 ## 2026-11-19
 
+- `create_extrusion` 用完全貫穿、但那個方向沒有實體時：有些 SOLIDWORKS session 不會回傳帶錯誤的特徵，而是什麼都
+  不回傳，工具以前只說「Failed to create extrusion」。現在會跟另一種情況一樣說明：那個方向找不到終點，請改用
+  反方向或固定深度。
 - `recognize_features`：SOLIDWORKS 回報 FeatureWorks 已載入、但其實沒有啟動時（在 SOLIDWORKS 2022 實測過），
   錯誤訊息現在會說明這個情況，並請使用者在「工具 → 附加程式」勾選 FeatureWorks。以前一律說需要 Professional
   或 Premium 授權，但問題不在那裡。沒安裝 FeatureWorks 和授權錯誤現在也會分開說明。
