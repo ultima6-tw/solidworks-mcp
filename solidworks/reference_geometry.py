@@ -9,6 +9,7 @@ import math
 from mcp.types import Tool
 from . import selection_helpers as sel
 from .com_utils import com_prop
+from .feature_errors import new_features, snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -417,17 +418,10 @@ class ReferenceGeometryTools:
         # IFeatureManager.InsertRefAxis, does not exist in the SOLIDWORKS API.)
         # Probed on SW2022: cylindrical face and two planes work; a CIRCULAR
         # edge is rejected (SOLIDWORKS needs a straight edge for this type).
-        def _ref_axes():
-            names, f = [], doc.FirstFeature
-            while f is not None:
-                if f.GetTypeName2 == "RefAxis":
-                    names.append(f)
-                f = f.GetNextFeature
-            return names
-
-        before = {f.Name for f in _ref_axes()}
+        tree_before = snapshot(doc)
         ok = doc.InsertAxis2(True)
-        new_axes = [f for f in _ref_axes() if f.Name not in before]
+        new_axes = [f for f in (new_features(doc, tree_before) or [])
+                    if f.GetTypeName2 == "RefAxis"]
         if not ok or not new_axes:
             hint = (" For a circular edge use type CYLINDRICAL_FACE with a point on "
                     "the cylinder instead — EDGE needs a straight edge."

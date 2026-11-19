@@ -61,8 +61,11 @@ def _feature_name(feature):
         return ""
 
 
-def _iter_reference_planes(doc):
-    """Yield RefPlane features in model-definition order."""
+def _iter_reference_planes(doc, stop_at_origin=False):
+    """Yield RefPlane features in model-definition order. stop_at_origin:
+    stop at the Origin feature -- the stock planes come before it, and every
+    feature object fetched costs SOLIDWORKS handles it never frees, so a full
+    walk on every create_sketch added up on a long part."""
     try:
         feature = com_prop(doc, "FirstFeature")
     except Exception:
@@ -71,8 +74,11 @@ def _iter_reference_planes(doc):
     while feature is not None and steps < 2000:
         steps += 1
         try:
-            if str(com_prop(feature, "GetTypeName2")) == "RefPlane":
+            type_name = str(com_prop(feature, "GetTypeName2"))
+            if type_name == "RefPlane":
                 yield feature
+            elif stop_at_origin and type_name == "OriginProfileFeature":
+                return
         except Exception:
             pass
         try:
@@ -143,8 +149,12 @@ def resolve_plane_feature(doc, plane_name):
     key = standard_plane_key(requested)
     if key:
         feature, strategy = _resolve_standard_from_features(
-            list(_iter_reference_planes(doc)), key
+            list(_iter_reference_planes(doc, stop_at_origin=True)), key
         )
+        if feature is None:   # template without stock planes before the origin
+            feature, strategy = _resolve_standard_from_features(
+                list(_iter_reference_planes(doc)), key
+            )
         if feature is not None:
             logger.info(
                 "Resolved %s plane as '%s' via %s",
@@ -166,10 +176,15 @@ def resolve_plane_feature(doc, plane_name):
 
 def get_standard_plane_names(doc):
     """Return actual document-local names for every resolvable stock plane."""
-    features = list(_iter_reference_planes(doc))
+    features = list(_iter_reference_planes(doc, stop_at_origin=True))
+    full = None
     result = {}
     for key in ("Front", "Top", "Right"):
         feature, _ = _resolve_standard_from_features(features, key)
+        if feature is None:
+            if full is None:
+                full = list(_iter_reference_planes(doc))
+            feature, _ = _resolve_standard_from_features(full, key)
         if feature is not None:
             result[key] = _feature_name(feature)
     return result

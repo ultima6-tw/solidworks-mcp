@@ -10,6 +10,7 @@ from mcp.types import Tool
 from . import selection_helpers as sel
 from .com_utils import exit_active_sketch, resolve_tracked_name
 from .features import insert_boundary_feature
+from .feature_errors import newest_sketch_name
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +134,9 @@ class CutFeatureTools:
 
     def _get_latest_sketch_name(self, doc) -> str:
         try:
-            features = doc.FeatureManager.GetFeatures(True)
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        return feature.Name
+            name = newest_sketch_name(doc)
+            if name:
+                return name
         except Exception as e:
             logger.warning(f"Could not find latest sketch: {e}")
         return "Sketch1"

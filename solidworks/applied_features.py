@@ -9,6 +9,7 @@ import math
 from mcp.types import Tool
 from . import selection_helpers as sel
 from .com_utils import com_prop, exit_active_sketch
+from .feature_errors import new_features, newest_sketch_name, snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -524,9 +525,9 @@ class AppliedFeatureTools:
         # only ever report a feature that is genuinely NEW (a failed second
         # shell used to return ✓ naming the pre-existing Shell1).
         try:
-            names_before = {f.Name for f in (doc.FeatureManager.GetFeatures(True) or [])}
+            tree_before = snapshot(doc)
         except Exception:
-            names_before = set()
+            tree_before = None
 
         # In SW2025, InsertFeatureShell lives on the model (IModelDoc2),
         # NOT on FeatureManager. It may return None even on success.
@@ -540,9 +541,9 @@ class AppliedFeatureTools:
             # InsertFeatureShell may return None even on success in SW2025;
             # verify by scanning the feature tree for a Shell feature that
             # was NOT there before this call (newest first).
-            features = doc.FeatureManager.GetFeatures(True)
-            for f in reversed(features or []):
-                if f.GetTypeName2 == "Shell" and f.Name not in names_before:
+            new = (new_features(doc, tree_before) or []) if tree_before is not None else []
+            for f in reversed(new):
+                if f.GetTypeName2 == "Shell":
                     feature = f
                     break
 
@@ -629,13 +630,7 @@ class AppliedFeatureTools:
         sketch_name = exit_active_sketch(doc, self.tracker)
         if not sketch_name:
             # No sketch was active — fall back to the newest sketch in the tree
-            features = doc.FeatureManager.GetFeatures(True)
-            sketch_name = "Sketch1"
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        sketch_name = feature.Name
-                        break
+            sketch_name = newest_sketch_name(doc) or "Sketch1"
 
         sketch_feature = doc.FeatureByName(sketch_name)
         if not sketch_feature:
@@ -650,15 +645,8 @@ class AppliedFeatureTools:
         # direction is flipped once (like create_cut_extrusion's auto-flip).
         # Probed on SW2022: InsertRib builds the rib but RETURNS None, so the
         # new feature is found by diffing the tree and the volume is checked.
-        def _all_features():
-            out, f = [], doc.FirstFeature
-            while f is not None:
-                out.append(f)
-                f = f.GetNextFeature
-            return out
-
         def _try(material_flip):
-            names_before = {f.Name for f in _all_features()}
+            tree_before = snapshot(doc)
             volume_before = _body_volume_mm3(doc)
             doc.ClearSelection2(True)
             sketch_feature.Select2(False, 0)
@@ -674,7 +662,7 @@ class AppliedFeatureTools:
                 False,          # IsNormToSketch: False = parallel to the sketch
                 False,          # IsDraftedFromWall
             )
-            new = [f for f in _all_features() if f.Name not in names_before]
+            new = new_features(doc, tree_before) or []
             volume_after = _body_volume_mm3(doc)
             if new and volume_before is not None and volume_after is not None                     and volume_after - volume_before > 1e-6:
                 return new[-1]
@@ -723,13 +711,7 @@ class AppliedFeatureTools:
         sketch_name = exit_active_sketch(doc, self.tracker)
         if not sketch_name:
             # No sketch was active — fall back to the newest sketch in the tree
-            features = doc.FeatureManager.GetFeatures(True)
-            sketch_name = "Sketch1"
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        sketch_name = feature.Name
-                        break
+            sketch_name = newest_sketch_name(doc) or "Sketch1"
 
         # Select sketch and face — both selections are load-bearing; a silent
         # miss used to fall through to InsertWrapFeature2 anyway

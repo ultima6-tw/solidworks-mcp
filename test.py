@@ -4490,9 +4490,11 @@ def test_mcp_linear_pattern_direction(sw, template):
 
 @register_test("mcp_handle_cost", "MCP Handle Cost Per Call", "MCP Tools",
                "Every COM object SOLIDWORKS hands to this client leaves handles in the SOLIDWORKS process "
-               "that are never freed. On a part with ~60 features, one create_cut_extrusion must cost "
-               "less than two walks of the whole feature tree in SOLIDWORKS handles (it used to cost "
-               "~5.5 walks: the server's before/after checks walked the tree several times per call)",
+               "that are never freed. On a part with ~60 features (one walk of the whole tree = average "
+               "of 3), create_sketch must cost < 1.2 walks and create_cut_extrusion < 0.5 walks (each the "
+               "average of 2 calls) "
+               "in SOLIDWORKS handles (they used to cost ~1.8 and ~5.5 walks: the server's before/after "
+               "checks, the latest-sketch lookups and the standard-plane lookup walked the tree)",
                order=56)
 def test_mcp_handle_cost(sw, template):
     try:
@@ -4531,19 +4533,29 @@ def test_mcp_handle_cost(sw, template):
             R("solidworks_create_cut_extrusion", {"depth": 3})
         doc = sw.ActiveDoc
         h0 = handles()
-        n_feats = len(feature_names(doc))
-        walk = handles() - h0
-        R("solidworks_create_sketch", {"plane": "Front"})
-        R("solidworks_sketch_circle", {"radius": 2, "centerX": 40, "centerY": 40})
-        h1 = handles()
-        cut = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 3}))
-        cost = handles() - h1
+        for _ in range(3):
+            n_feats = len(feature_names(doc))
+        walk = (handles() - h0) / 3
+        sk_costs, cut_costs, results = [], [], []
+        for x in (40, 30):
+            h1 = handles()
+            results.append(_mcp_json(R("solidworks_create_sketch", {"plane": "Front"})))
+            sk_costs.append(handles() - h1)
+            R("solidworks_sketch_circle", {"radius": 2, "centerX": x, "centerY": 40})
+            h1 = handles()
+            results.append(_mcp_json(R("solidworks_create_cut_extrusion", {"depth": 3})))
+            cut_costs.append(handles() - h1)
+        all_ok = all(r["result"].startswith("✓") for r in results)
+        sk_cost, cost = sum(sk_costs) / 2, sum(cut_costs) / 2
         doc = None
         R("solidworks_close_document", {})
-        ok = cut["result"].startswith("✓") and walk > 0 and cost < 2 * walk
-        log(f"{n_feats} features: one tree walk {walk:+d} handles, one cut {cost:+d} handles "
-            f"({cost / walk if walk else float('nan'):.1f} walks; must be < 2)",
-            "SUCCESS" if ok else "ERROR")
+        ok = True
+        for label, c, limit in (("create_sketch", sk_cost, 1.2), ("create_cut_extrusion", cost, 0.5)):
+            good = all_ok and walk > 0 and c < limit * walk
+            log(f"{n_feats} features: one tree walk {walk:+.0f} handles, one {label} {c:+.0f} handles "
+                f"({c / walk if walk else float('nan'):.2f} walks; must be < {limit})",
+                "SUCCESS" if good else "ERROR")
+            ok = ok and good
         return ok
     except Exception as e:
         log(f"mcp_handle_cost FAILED: {e}", "ERROR")

@@ -13,6 +13,7 @@ from mcp.types import Tool
 from typing import Any, Dict, List
 
 from .com_utils import com_prop
+from .feature_errors import newest_sketch_name
 
 logger = logging.getLogger(__name__)
 
@@ -1131,10 +1132,7 @@ class SketchingTools:
         """Actual name of the just-entered sketch: newest ProfileFeature in
         the tree (same authority exit_sketch already uses). None on failure."""
         try:
-            features = doc.FeatureManager.GetFeatures(True)
-            for feature in reversed(features or []):
-                if feature.GetTypeName2 == "ProfileFeature":
-                    return feature.Name
+            return newest_sketch_name(doc)
         except Exception as e:
             logger.warning(f"Sketch name read-back failed: {e}")
         return None
@@ -2553,12 +2551,7 @@ class SketchingTools:
         # Find the actual sketch name from the feature tree
         actual_name = None
         try:
-            features = doc.FeatureManager.GetFeatures(True)
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        actual_name = feature.Name
-                        break
+            actual_name = newest_sketch_name(doc)
         except Exception as e:
             logger.warning(f"Could not verify sketch name: {e}")
 

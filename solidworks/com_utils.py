@@ -72,10 +72,8 @@ def exit_active_sketch(doc, tracker=None):
     # authority exit_sketch uses).
     actual = None
     try:
-        for feature in reversed(doc.FeatureManager.GetFeatures(True) or []):
-            if feature.GetTypeName2 == "ProfileFeature":
-                actual = feature.Name
-                break
+        from .feature_errors import newest_sketch_name
+        actual = newest_sketch_name(doc)
     except Exception as e:
         logger.warning(f"Sketch name read-back failed on implicit exit: {e}")
 

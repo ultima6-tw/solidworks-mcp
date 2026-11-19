@@ -10,6 +10,7 @@ import win32com.client
 from mcp.types import Tool
 from typing import Any
 from .com_utils import com_prop, exit_active_sketch
+from .feature_errors import newest_sketch_name
 
 
 def _feature_error_code(feat) -> int:
@@ -274,14 +275,10 @@ class ModelingTools:
     def _get_latest_sketch_name(self, doc) -> str:
         """Walk the feature tree in reverse to find the most recent sketch feature"""
         try:
-            feature_count = doc.FeatureManager.GetFeatureCount(True)
-            features = doc.FeatureManager.GetFeatures(True)
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        name = feature.Name
-                        logger.info(f"Latest sketch found in feature tree: {name}")
-                        return name
+            name = newest_sketch_name(doc)
+            if name:
+                logger.info(f"Latest sketch found in feature tree: {name}")
+                return name
         except Exception as e:
             logger.warning(f"Could not enumerate features to find latest sketch: {e}")
         logger.warning("No sketch found in feature tree, falling back to Sketch1")

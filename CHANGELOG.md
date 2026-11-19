@@ -38,9 +38,9 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
   handles in the SOLIDWORKS process that are never freed, and the server's
   after-call checks walked the whole feature tree several times per call. In a
   long test session SOLIDWORKS reached almost 3 million handles, and each call
-  got slower as the part grew. The checks now read only the last few features:
-  a cut on a 60-feature part costs about a fifth of the handles and takes ~2 s
-  instead of ~6 s.
+  got slower as the part grew. The checks and the tools now read only the last
+  few features: on a 60-feature part a cut costs ~300 handles instead of
+  ~6000 (and ~1.3 s instead of ~6.5 s), a new sketch ~450 instead of ~1600.
 - **Update check at start-up.** The server asks GitHub once, in the background,
   whether your copy is behind, and the first tool result of the session says so.
   One request to the public GitHub API; nothing about you, your machine or your

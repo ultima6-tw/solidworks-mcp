@@ -172,6 +172,34 @@ def new_features(doc, before):
         i += 1
 
 
+def newest_feature(doc, type_names=None):
+    """The last top-level feature -- of one of type_names (GetTypeName2) when
+    given -- read backwards from the end of the tree with
+    FeatureByPositionReverse: normally one or two objects instead of the whole
+    tree (GetFeatures(True) also returns the features "in any order" per the
+    API help, so its last item was never guaranteed to be the newest). None
+    when there is none."""
+    i = 0
+    while True:
+        f = doc.FeatureByPositionReverse(i)
+        if f is None:
+            return None
+        if type_names is None:
+            return f
+        try:
+            if f.GetTypeName2 in type_names:
+                return f
+        except Exception:
+            pass
+        i += 1
+
+
+def newest_sketch_name(doc):
+    """Name of the newest sketch (ProfileFeature) in the tree, or None."""
+    f = newest_feature(doc, ("ProfileFeature",))
+    return _name(f) if f is not None else None
+
+
 def delete_feature_only(doc, feat):
     """Delete one feature; its absorbed sketch stays (DeleteSelection2
     option 0 -- swDelete_Absorbed = 2 would take the sketch too)."""

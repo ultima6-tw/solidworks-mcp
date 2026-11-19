@@ -9,6 +9,7 @@ import math
 from mcp.types import Tool
 from . import selection_helpers as sel
 from .com_utils import exit_active_sketch, resolve_tracked_name
+from .feature_errors import new_features, newest_sketch_name, snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -25,20 +26,13 @@ def insert_boundary_feature(doc, profiles, guides, net_type, list_available=None
     returns None, so the new feature is found by diffing the tree and the
     body volume is checked. Returns the feature.
     """
-    def _features():
-        out, f = [], doc.FirstFeature
-        while f is not None:
-            out.append(f)
-            f = f.GetNextFeature
-        return out
-
     def _volume():
         try:
             return float(doc.Extension.CreateMassProperty.Volume) * 1e9
         except Exception:
             return 0.0  # no solid body yet (boundary boss as first feature)
 
-    names_before = {f.Name for f in _features()}
+    tree_before = snapshot(doc)
     volume_before = _volume()
     callout = sel.make_callout()
 
@@ -77,7 +71,7 @@ def insert_boundary_feature(doc, profiles, guides, net_type, list_available=None
     )
     sel.clear_selection(doc)
 
-    new = [f for f in _features() if f.Name not in names_before]
+    new = new_features(doc, tree_before) or []
     if not new:
         return None
     feature = new[-1]
@@ -208,11 +202,9 @@ class FeatureTools:
     def _get_latest_sketch_name(self, doc) -> str:
         """Walk the feature tree in reverse to find the most recent sketch."""
         try:
-            features = doc.FeatureManager.GetFeatures(True)
-            if features:
-                for feature in reversed(features):
-                    if feature.GetTypeName2 == "ProfileFeature":
-                        return feature.Name
+            name = newest_sketch_name(doc)
+            if name:
+                return name
         except Exception as e:
             logger.warning(f"Could not find latest sketch: {e}")
         return "Sketch1"
