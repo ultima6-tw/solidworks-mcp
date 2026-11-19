@@ -9,6 +9,16 @@ desktop bridge host. The server tells you when GitHub has commits your copy does
 not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 繁體中文：[CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md).
 
+## 2026-11-19
+
+- Sketch tools no longer fail on a small shape next to other geometry when
+  the SOLIDWORKS window is small. Snapping reaches a fixed number of screen
+  pixels, so in a smaller window (or zoomed further out) it reaches further in
+  mm; seen on SOLIDWORKS 2022 in a 1024×640 or 1536×960 window, a 7×14 mm
+  rectangle below two small circles made SOLIDWORKS draw nothing, and the tool
+  reported an error. The tool now draws it again with snapping off, as it
+  already did when snapping resized a shape.
+
 ## 2026-11-18
 
 - **Update recommended — tools that change the solid report its volume

@@ -1261,10 +1261,29 @@ class SketchingTools:
         the sketch) if even the snapping-off redraw is wrong.
         """
         before = self._segment_count(doc)
-        obj = self._check_drawn(create(_direct_retry(doc)), what)
+        obj = create(_direct_retry(doc))
+        if obj is None:
+            # Snapping can also make the call fail outright: probed on SW2022
+            # at 1024x640 / zoom to fit, a 7x14 rectangle below two r1.7
+            # circles returned None, AddToDB=True too; snapping off drew it
+            # exactly (so did zooming in ~4x -- the snap range is in pixels).
+            if before >= 0 and self._segment_count(doc) != before:
+                raise Exception(f"SolidWorks failed to draw {what} (COM call returned "
+                                f"None) but the sketch changed. Check the sketch.")
+            with sketch_snapping_off(self.connection.app):
+                obj = self._check_drawn(create(_direct_retry(doc)), what)
+            logger.info(f"{what}: the draw call returned None; drawn with snapping off")
+            snapping_was_off = True
+        else:
+            snapping_was_off = False
         problems = check(obj)
         if not problems:
             return obj
+        if snapping_was_off:
+            self._delete_drawn(doc, obj)
+            raise Exception(f"SolidWorks drew {what} at the wrong size/position even "
+                            f"with snapping off ({'; '.join(problems)}). Nothing was "
+                            f"added to the sketch.")
         logger.warning(f"{what}: drawn geometry differs from the request "
                        f"({'; '.join(problems)}) -- redrawing with snapping off")
         self._delete_drawn(doc, obj)

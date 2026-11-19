@@ -3777,11 +3777,43 @@ def test_mcp_stdio_transport(sw, template):
         return False
 
 
+def _sw_window_size(width, height):
+    """Resize the SOLIDWORKS main window (restored, at its current corner) and
+    return a function that puts back the previous placement. Sketch snapping
+    reaches a fixed number of pixels, so how far it reaches in mm depends on
+    the window size -- a test that needs snapping to bite sets the size."""
+    import win32con
+    import win32gui
+    wins = []
+    win32gui.EnumWindows(lambda h, acc: (acc.append(h) if win32gui.IsWindowVisible(h)
+                                         and win32gui.GetWindowText(h).startswith("SOLIDWORKS")
+                                         else None) or True, wins)
+    if not wins:
+        log("SOLIDWORKS main window not found; window size left as it is", "WARNING")
+        return lambda: None
+    hwnd = wins[0]
+    placement = win32gui.GetWindowPlacement(hwnd)
+    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    left, top, _, _ = win32gui.GetWindowRect(hwnd)
+    win32gui.SetWindowPos(hwnd, 0, left, top, width, height, win32con.SWP_NOZORDER)
+    log(f"SOLIDWORKS window set to {width}x{height}")
+
+    def restore():
+        try:
+            win32gui.SetWindowPlacement(hwnd, placement)
+        except Exception as e:
+            log(f"could not restore the SOLIDWORKS window: {e}", "WARNING")
+    return restore
+
+
 @register_test("mcp_sketch_snapping", "MCP Sketch Snapping Read-back", "MCP Tools",
-               "At a zoomed-out view (panel-sized sketch, zoom to fit) small circles beside a rectangle and a "
-               "rectangle in line with small circles come out exactly as asked (snapping used to resize them "
-               "silently); joined lines still share one endpoint; the snapping preference is restored", order=48)
+               "In a 1024x640 SOLIDWORKS window at a zoomed-out view (panel-sized sketch, zoom to fit) small "
+               "circles beside a rectangle and a rectangle in line with small circles come out exactly as asked "
+               "(snapping used to resize them silently, and in a small window made the rectangle call return "
+               "None); joined lines still share one endpoint; the snapping preference and the window are "
+               "restored", order=48)
 def test_mcp_sketch_snapping(sw, template):
+    restore_window = _sw_window_size(1024, 640)
     try:
         import types
         ok = True
@@ -3844,6 +3876,8 @@ def test_mcp_sketch_snapping(sw, template):
         log(f"mcp_sketch_snapping FAILED: {e}", "ERROR")
         traceback.print_exc()
         return False
+    finally:
+        restore_window()
 
 
 @register_test("mcp_sketch_snapping_tools", "MCP Sketch Snapping: Other Tools", "MCP Tools",
