@@ -173,7 +173,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 
 ### Patterns
 
-`linear_pattern` (features + direction + spacing + count, optional 2nd direction; direction accepts `{"axis": "X"|"Y"|"Z"}` — PREFERRED, picks any parallel body edge via object selection — or a coordinate point on an edge), `circular_pattern` (features + axis + count + angle), `mirror` (features + mirror plane). Plane arguments (mirror plane, draft neutral plane, `ref_plane` referencePlane, `create_sketch` plane) all go through `selection_helpers.resolve_plane_feature`, which accepts standard names, custom names and `ref:` IDs (the prefix is stripped — an ID is always `ref:<current name>`).
+`linear_pattern` (features + direction + spacing + count, optional 2nd direction; direction accepts `{"axis": "X"|"Y"|"Z"}` — PREFERRED, picks any parallel body edge via object selection; SOLIDWORKS runs the pattern along the edge's start→end, so an edge found pointing toward −axis flips `reverseDir`, making `axis` always mean +axis and `reverseDir` −axis — or a coordinate point on an edge, which follows that edge's own direction), `circular_pattern` (features + axis + count + angle), `mirror` (features + mirror plane). Plane arguments (mirror plane, draft neutral plane, `ref_plane` referencePlane, `create_sketch` plane) all go through `selection_helpers.resolve_plane_feature`, which accepts standard names, custom names and `ref:` IDs (the prefix is stripped — an ID is always `ref:<current name>`).
 
 ### Hole Features
 

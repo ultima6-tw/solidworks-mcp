@@ -44,7 +44,7 @@ class PatternTools:
                         },
                         "direction1": {
                             "type": "object",
-                            "description": "Pattern direction 1: EITHER {\"axis\": \"X\"|\"Y\"|\"Z\"} (PREFERRED — picks any body edge parallel to that model axis, no coordinates needed; use reverseDir1 if the pattern runs the wrong way) OR a point on an edge ({x, y, z} in mm)",
+                            "description": "Pattern direction 1: EITHER {\"axis\": \"X\"|\"Y\"|\"Z\"} (PREFERRED — copies go toward +axis, or -axis with reverseDir1; picks a body edge parallel to that model axis, no coordinates needed) OR a point on an edge ({x, y, z} in mm; copies follow that edge's own direction, which SOLIDWORKS decides -- use reverseDir1 if they run the wrong way)",
                             "properties": {
                                 "axis": {"type": "string", "enum": ["X", "Y", "Z"],
                                          "description": "Model axis for the pattern direction (preferred over coordinates)"},
@@ -63,12 +63,12 @@ class PatternTools:
                         },
                         "reverseDir1": {
                             "type": "boolean",
-                            "description": "Reverse direction 1 (default: false)",
+                            "description": "Reverse direction 1 (default: false). With {\"axis\"}: copies go toward -axis",
                             "default": False
                         },
                         "direction2": {
                             "type": "object",
-                            "description": "Optional pattern direction 2: {\"axis\": \"X\"|\"Y\"|\"Z\"} (preferred) or a point on an edge ({x, y, z} in mm)",
+                            "description": "Optional pattern direction 2: {\"axis\": \"X\"|\"Y\"|\"Z\"} (preferred; toward +axis, -axis with reverseDir2) or a point on an edge ({x, y, z} in mm)",
                             "properties": {
                                 "axis": {"type": "string", "enum": ["X", "Y", "Z"],
                                          "description": "Model axis for the pattern direction (preferred over coordinates)"},
@@ -87,7 +87,7 @@ class PatternTools:
                         },
                         "reverseDir2": {
                             "type": "boolean",
-                            "description": "Reverse direction 2 (default: false)",
+                            "description": "Reverse direction 2 (default: false). With {\"axis\"}: copies go toward -axis",
                             "default": False
                         }
                     },
@@ -183,12 +183,19 @@ class PatternTools:
     def _select_direction_edge(self, doc, d, mark, append, label):
         """Select a pattern direction edge: {'axis': 'X'|'Y'|'Z'} picks any
         linear body edge parallel to that model axis (object selection,
-        view-independent); {x, y, z} picks by coordinate. Raises on failure."""
+        view-independent); {x, y, z} picks by coordinate. Raises on failure.
+
+        Returns True when the selected edge points along the NEGATIVE axis.
+        SOLIDWORKS patterns along the edge's start->end direction, and which
+        parallel edge is found first is arbitrary, so {'axis': 'X'} used to
+        run toward -X on a plain block; the caller flips the direction to make
+        {'axis': ...} always mean +axis. Coordinate picks return False (the
+        caller chose that edge)."""
         axis = (d.get("axis") or "").upper() if isinstance(d, dict) else ""
         if axis:
             if axis not in ("X", "Y", "Z"):
                 raise Exception(f"{label} axis must be 'X', 'Y', or 'Z'")
-            edge = self._find_linear_edge_parallel(doc, axis)
+            edge, negative = self._find_linear_edge_parallel(doc, axis)
             if edge is None:
                 raise Exception(
                     f"No linear body edge parallel to the {axis} axis found "
@@ -196,14 +203,17 @@ class PatternTools:
                 )
             if not sel.select_entity_object(doc, edge, append=append, mark=mark):
                 raise Exception(f"Could not select the {label} edge for axis {axis}")
-            return
+            return negative
         if not all(k in d for k in ("x", "y", "z")):
             raise Exception(f"{label} needs either 'axis' or x/y/z coordinates")
         if not sel.select_edge(doc, d["x"], d["y"], d["z"], append=append, mark=mark):
             raise Exception(f"Could not select {label} edge")
+        return False
 
     def _find_linear_edge_parallel(self, doc, axis):
-        """Any linear body edge parallel to the given model axis, or None."""
+        """(edge, points_negative) for any linear body edge parallel to the
+        given model axis, or (None, False). points_negative: the edge runs
+        start->end toward -axis."""
         import types as _types
         unit = {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}[axis]
 
@@ -214,7 +224,7 @@ class PatternTools:
         try:
             bodies = doc.GetBodies2(0, True)
         except Exception:
-            return None
+            return None, False
         for body in bodies or []:
             for edge in body.GetEdges() or []:
                 try:
@@ -226,7 +236,8 @@ class PatternTools:
                     chord = (v[0] ** 2 + v[1] ** 2 + v[2] ** 2) ** 0.5
                     if chord < 1e-9:
                         continue
-                    if abs(sum(v[i] * unit[i] for i in range(3))) / chord < 0.9999:
+                    along = sum(v[i] * unit[i] for i in range(3))
+                    if abs(along) / chord < 0.9999:
                         continue
                     # Linear check: curve length == chord length (an arc's
                     # chord can be axis-parallel without the edge being one)
@@ -235,10 +246,10 @@ class PatternTools:
                     arc_len = curve.GetLength2(params[6], params[7])
                     if abs(arc_len - chord) / chord > 1e-6:
                         continue
-                    return edge
+                    return edge, along < 0
                 except Exception:
                     continue
-        return None
+        return None, False
 
     def linear_pattern(self, args: dict) -> str:
         doc = self.connection.get_active_doc()
@@ -267,12 +278,15 @@ class PatternTools:
 
         sel.clear_selection(doc)
 
-        # Select direction 1 edge (mark=1)
-        self._select_direction_edge(doc, dir1, mark=1, append=False, label="direction 1")
+        # Select direction 1 edge (mark=1). An {'axis'} edge that happens to
+        # point toward -axis flips the direction, so 'axis' means +axis.
+        if self._select_direction_edge(doc, dir1, mark=1, append=False, label="direction 1"):
+            reverse1 = not reverse1
 
         # Select direction 2 edge if needed (mark=2)
         if use_dir2:
-            self._select_direction_edge(doc, dir2, mark=2, append=True, label="direction 2")
+            if self._select_direction_edge(doc, dir2, mark=2, append=True, label="direction 2"):
+                reverse2 = not reverse2
 
         # Select features to pattern (mark=4)
         for i, name in enumerate(features):

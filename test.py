@@ -4399,6 +4399,95 @@ def test_mcp_volume_check_patterns(sw, template):
         return False
 
 
+@register_test("mcp_linear_pattern_direction", "MCP Linear Pattern Direction", "MCP Tools",
+               "direction {'axis': X/Y/Z} puts the copies toward +axis and reverseDir toward -axis, in "
+               "both pattern directions -- read back from where the copied holes are. The tool used to "
+               "follow whichever parallel edge it found first, so 'X' ran toward -X on a plain block",
+               order=55)
+def test_mcp_linear_pattern_direction(sw, template):
+    try:
+        ok = True
+
+        def check(label, cond, detail=""):
+            nonlocal ok
+            log(f"{label}{': ' + detail if detail else ''}", "SUCCESS" if cond else "ERROR")
+            ok = ok and bool(cond)
+
+        server = create_mcp_server()
+        R = server._route_tool
+
+        def hole_axes(doc):
+            """Each cylindrical face's axis as the point where it crosses the
+            plane through the origin normal to it (mm, rounded): a hole's
+            position independent of which face piece is read."""
+            import types as _types
+
+            def prop(obj, name):
+                v = getattr(obj, name)
+                return v() if isinstance(v, _types.MethodType) else v
+
+            keys = set()
+            for body in doc.GetBodies2(0, True) or []:
+                for face in body.GetFaces() or []:
+                    surf = prop(face, "GetSurface")
+                    if not prop(surf, "IsCylinder"):
+                        continue
+                    p = surf.CylinderParams
+                    o, a = [p[i] * 1000 for i in range(3)], p[3:6]
+                    t = sum(o[i] * a[i] for i in range(3))
+                    keys.add(tuple(round(o[i] - t * a[i], 1) + 0.0 for i in range(3)))
+            return keys
+
+        def pattern_copies(seed, **args):
+            doc = sw.ActiveDoc
+            before = hole_axes(doc)
+            res = _mcp_json(R("solidworks_linear_pattern", {"features": [seed], **args}))
+            return res, hole_axes(doc) - before
+
+        R("solidworks_new_part", {})
+        _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))
+        _mcp_json(R("solidworks_sketch_rectangle", {"width": 100, "height": 100, "centerX": 0, "centerY": 0}))
+        _mcp_json(R("solidworks_create_extrusion", {"depth": 100}))
+        box = sw.ActiveDoc.GetPartBox(True)
+        zc = round((box[2] + box[5]) / 2 * 1000, 1)
+
+        # Hole along Z at the origin: its copies show the X and Y directions.
+        _mcp_json(R("solidworks_create_sketch", {"plane": "Front"}))
+        _mcp_json(R("solidworks_sketch_circle", {"radius": 3, "centerX": 0, "centerY": 0}))
+        zhole = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10, "endCondition": "THROUGH_ALL"}))["id"]
+        # Hole along Y at z = zc (Top sketch Y = model -Z): copies show Z.
+        _mcp_json(R("solidworks_create_sketch", {"plane": "Top"}))
+        _mcp_json(R("solidworks_sketch_circle", {"radius": 3, "centerX": 0, "centerY": -zc}))
+        yhole = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 10, "endCondition": "THROUGH_ALL"}))["id"]
+
+        cases = [
+            ("X", False, zhole, {(20.0, 0.0, 0.0)}),
+            ("X", True, zhole, {(-20.0, 0.0, 0.0)}),
+            ("Y", False, zhole, {(0.0, 20.0, 0.0)}),
+            ("Y", True, zhole, {(0.0, -20.0, 0.0)}),
+            ("Z", False, yhole, {(0.0, 0.0, round(zc + 20, 1))}),
+            ("Z", True, yhole, {(0.0, 0.0, round(zc - 20, 1))}),
+        ]
+        for axis, rev, seed, want in cases:
+            res, got = pattern_copies(seed, direction1={"axis": axis}, spacing1=20, count1=2, reverseDir1=rev)
+            check(f"axis {axis}{' reversed' if rev else ''}: copy at {sorted(want)}",
+                  res["result"].startswith("✓") and got == want, f"got {sorted(got)}; {res['result'][:80]}")
+
+        # Direction 2 is flipped the same way.
+        res, got = pattern_copies(zhole, direction1={"axis": "X"}, spacing1=30, count1=2,
+                                  direction2={"axis": "Y"}, spacing2=30, count2=2, reverseDir2=True)
+        want = {(30.0, 0.0, 0.0), (0.0, -30.0, 0.0), (30.0, -30.0, 0.0)}
+        check("2 directions, X and Y reversed: copies at +X / -Y",
+              res["result"].startswith("✓") and got == want, f"got {sorted(got)}; {res['result'][:80]}")
+
+        R("solidworks_close_document", {})
+        return ok
+    except Exception as e:
+        log(f"mcp_linear_pattern_direction FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "

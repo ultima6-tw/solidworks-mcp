@@ -28,6 +28,11 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 - `mirror` (mirror plane), `draft` (neutral plane) and `ref_plane` (reference
   plane) accept the ID `ref_plane` returns (`ref:Plane1`); they used to accept
   only the plane's name.
+- **Update recommended — `linear_pattern` with `{"axis": "X"}` could run
+  toward −X.** SOLIDWORKS patterns along the direction of the edge it is
+  given, and the tool used whichever parallel edge it found first; on a plain
+  block X and Z ran the wrong way. `{"axis": ...}` now always means +axis, and
+  `reverseDir1`/`reverseDir2` −axis, in both pattern directions.
 - **Update check at start-up.** The server asks GitHub once, in the background,
   whether your copy is behind, and the first tool result of the session says so.
   One request to the public GitHub API; nothing about you, your machine or your

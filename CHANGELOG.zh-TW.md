@@ -20,6 +20,9 @@ English: [CHANGELOG.md](CHANGELOG.md).
   標 `"warning": true`）。以前只要每個呼叫都有執行，總結就是 ✓。
 - `mirror`（鏡射平面）、`draft`（中立面）、`ref_plane`（參考平面）接受 `ref_plane` 回傳的 ID
   （`ref:Plane1`）；以前只接受平面名稱。
+- **建議更新——`linear_pattern` 設 `{"axis": "X"}` 可能往 −X 排。** SOLIDWORKS 沿著給它的那條邊
+  的方向排列，工具以前用找到的第一條平行邊；在一般方塊上實測，X 和 Z 都排反了。現在 `{"axis": ...}`
+  一律往 +軸，`reverseDir1`／`reverseDir2` 往 −軸，兩個陣列方向都是。
 - **啟動時檢查更新。** server 啟動後在背景問 GitHub 一次，你這份是不是舊版；是的話，這次
   使用的第一個工具回傳會附上提醒。只送出一個公開的 GitHub API 查詢，不會送出任何跟你、你的
   電腦或文件有關的資料。用 `SOLIDWORKS_MCP_UPDATE_CHECK=0` 關掉。詳見
