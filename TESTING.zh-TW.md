@@ -49,14 +49,14 @@ python test.py                              # 全部
 
 ## 測試範圍
 
-6 個類別共 89 個測試（完整清單用 `python test.py --list`）：
+6 個類別共 90 個測試（完整清單用 `python test.py --list`）：
 
 | 類別 | 數量 | 檢查內容 |
 |---|---|---|
 | Basic | 3 | 所有 `.py` 都能編譯、bridge 模組能載入、啟動時的更新檢查行為正確（這兩項不需要 SOLIDWORKS）；從頭建一個方塊 |
 | Sketch Tools | 12 | 各種草圖圖元、尺寸、限制條件、建構線 |
 | Feature Tools | 9 | 除料伸長、圓角、倒角、薄殼、旋轉、疊層拉伸、參考平面、質量屬性、特徵清單 |
-| MCP Tools | 56 | 用 AI 呼叫的方式（經過 server 的工具分派）呼叫工具，並核對幾何、體積、ID、輸出檔案。其中 `mcp_stdio_transport` 會把 `server.py` 當成真正的 MCP stdio server 啟動，所有呼叫都經過 pipe 傳送；只有經過 stdio 才會出現的卡住問題，其他測試抓不到 |
+| MCP Tools | 57 | 用 AI 呼叫的方式（經過 server 的工具分派）呼叫工具，並核對幾何、體積、ID、輸出檔案。其中 `mcp_stdio_transport` 會把 `server.py` 當成真正的 MCP stdio server 啟動，所有呼叫都經過 pipe 傳送；只有經過 stdio 才會出現的卡住問題，其他測試抓不到 |
 | Assembly | 8 | 文件存檔／切換／關閉、插入零件、結合、干涉與抑制、各文件獨立的狀態、參數修改、外框 |
 | Integration | 1 | 在同一個本體上連續做多次除料伸長 |
 

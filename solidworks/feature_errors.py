@@ -111,6 +111,67 @@ def feature_names(doc):
     return names
 
 
+def _name(feat):
+    try:
+        return feat.Name
+    except Exception:
+        return None
+
+
+# Every COM object SOLIDWORKS hands to this out-of-process client leaves about
+# 8-17 kernel handles in the SOLIDWORKS process that are never given back --
+# not on closing the document, not when the client exits (probed on SW2022,
+# NOTES.md "SOLIDWORKS 記憶體越用越大"). Walking the whole tree costs one
+# object per feature, so the before/after snapshot walked it on every tool
+# call: ~900 handles per walk at 59 features, ~5600 per cut, millions over a
+# long session. The snapshot below reads only the last few features.
+MARKER_DEPTH = 3
+
+
+def snapshot(doc):
+    """The tree before a tool runs, for new_features(). Normally the names of
+    the last MARKER_DEPTH top-level features (FeatureByPositionReverse(i) is
+    the top-level walk in reverse; new features are appended after them).
+    When the rollback bar is not at the end, new features are inserted
+    mid-tree, so the full set of names is taken instead."""
+    last = doc.FeatureByPositionReverse(0)
+    try:
+        rolled = last is not None and bool(last.IsRolledBack)
+    except Exception:
+        rolled = True
+    if rolled:
+        return feature_names(doc)
+    marker = []
+    for i in range(MARKER_DEPTH):
+        f = last if i == 0 else doc.FeatureByPositionReverse(i)
+        if f is None:
+            break
+        name = _name(f)
+        if name is not None:
+            marker.append(name)
+    return {"marker": marker}
+
+
+def new_features(doc, before):
+    """Top-level features that appeared since `before`, in tree order.
+    `before` is a snapshot() or a set of names (full walk). Returns None when
+    it cannot be told: none of the marker features is left (deleted, renamed
+    or moved into a folder by the tool)."""
+    if not isinstance(before, dict):
+        names = set(before)
+        return [f for f in top_level_features(doc) if _name(f) not in names]
+    marker = set(before.get("marker") or [])
+    found, i = [], 0
+    while True:
+        f = doc.FeatureByPositionReverse(i)
+        if f is None:
+            return found[::-1] if not marker else None
+        if _name(f) in marker:
+            return found[::-1]
+        found.append(f)
+        i += 1
+
+
 def delete_feature_only(doc, feat):
     """Delete one feature; its absorbed sketch stays (DeleteSelection2
     option 0 -- swDelete_Absorbed = 2 would take the sketch too)."""
@@ -120,18 +181,15 @@ def delete_feature_only(doc, feat):
     doc.ClearSelection2(True)
 
 
-def check_new_features(doc, names_before, tracker=None):
-    """Read the error state of every top-level feature not in names_before.
+def check_new_features(doc, new_feats, tracker=None):
+    """Read the error state of every new top-level feature (new_features()).
     Features in ERROR are deleted (and dropped from the tracker); features
     with a WARNING are kept. Returns (removed_errors, warnings), each a list
     of (name, code)."""
     errors, warnings = [], []
-    for f in top_level_features(doc):
-        try:
-            name = f.Name
-        except Exception:
-            continue
-        if name in names_before:
+    for f in new_feats or []:
+        name = _name(f)
+        if name is None:
             continue
         code, is_warning = feature_error(f)
         if not code:

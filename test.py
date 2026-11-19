@@ -4488,6 +4488,69 @@ def test_mcp_linear_pattern_direction(sw, template):
         return False
 
 
+@register_test("mcp_handle_cost", "MCP Handle Cost Per Call", "MCP Tools",
+               "Every COM object SOLIDWORKS hands to this client leaves handles in the SOLIDWORKS process "
+               "that are never freed. On a part with ~60 features, one create_cut_extrusion must cost "
+               "less than two walks of the whole feature tree in SOLIDWORKS handles (it used to cost "
+               "~5.5 walks: the server's before/after checks walked the tree several times per call)",
+               order=56)
+def test_mcp_handle_cost(sw, template):
+    try:
+        import ctypes
+        import subprocess
+        import win32api
+        import win32con
+        from solidworks.feature_errors import feature_names
+
+        tl = subprocess.run(["tasklist", "/fi", "imagename eq SLDWORKS.exe", "/fo", "csv", "/nh"],
+                            capture_output=True, text=True).stdout
+        pids = [int(l.split('","')[1]) for l in tl.splitlines() if l.startswith('"SLDWORKS')]
+        if len(pids) != 1:
+            log(f"need exactly one SLDWORKS process, found {pids}", "ERROR")
+            return False
+        proc = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pids[0])
+
+        def handles():
+            import gc
+            gc.collect()
+            time.sleep(1.5)
+            n = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetProcessHandleCount(int(proc), ctypes.byref(n))
+            return n.value
+
+        server = create_mcp_server()
+        R = server._route_tool
+        R("solidworks_new_part", {})
+        R("solidworks_create_sketch", {"plane": "Front"})
+        R("solidworks_sketch_rectangle", {"width": 100, "height": 100, "centerX": 0, "centerY": 0})
+        R("solidworks_create_extrusion", {"depth": 10})
+        for i in range(20):
+            R("solidworks_create_sketch", {"plane": "Front"})
+            R("solidworks_sketch_circle", {"radius": 2, "centerX": -40 + (i % 9) * 10,
+                                           "centerY": -40 + (i // 9) * 10})
+            R("solidworks_create_cut_extrusion", {"depth": 3})
+        doc = sw.ActiveDoc
+        h0 = handles()
+        n_feats = len(feature_names(doc))
+        walk = handles() - h0
+        R("solidworks_create_sketch", {"plane": "Front"})
+        R("solidworks_sketch_circle", {"radius": 2, "centerX": 40, "centerY": 40})
+        h1 = handles()
+        cut = _mcp_json(R("solidworks_create_cut_extrusion", {"depth": 3}))
+        cost = handles() - h1
+        doc = None
+        R("solidworks_close_document", {})
+        ok = cut["result"].startswith("✓") and walk > 0 and cost < 2 * walk
+        log(f"{n_feats} features: one tree walk {walk:+d} handles, one cut {cost:+d} handles "
+            f"({cost / walk if walk else float('nan'):.1f} walks; must be < 2)",
+            "SUCCESS" if ok else "ERROR")
+        return ok
+    except Exception as e:
+        log(f"mcp_handle_cost FAILED: {e}", "ERROR")
+        traceback.print_exc()
+        return False
+
+
 @register_test("mcp_extrusion_error", "MCP Extrusion Returned In Error", "MCP Tools",
                "A THROUGH_ALL boss pointing away from the body (SW returns a feature in error 31 that adds "
                "nothing) is reported as an error, the feature is removed and its sketch kept; the body is "

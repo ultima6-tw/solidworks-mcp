@@ -33,6 +33,14 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
   given, and the tool used whichever parallel edge it found first; on a plain
   block X and Z ran the wrong way. `{"axis": ...}` now always means +axis, and
   `reverseDir1`/`reverseDir2` −axis, in both pattern directions.
+- **Update recommended — SOLIDWORKS no longer piles up handles on every
+  feature tool.** Every COM object SOLIDWORKS hands to the server leaves
+  handles in the SOLIDWORKS process that are never freed, and the server's
+  after-call checks walked the whole feature tree several times per call. In a
+  long test session SOLIDWORKS reached almost 3 million handles, and each call
+  got slower as the part grew. The checks now read only the last few features:
+  a cut on a 60-feature part costs about a fifth of the handles and takes ~2 s
+  instead of ~6 s.
 - **Update check at start-up.** The server asks GitHub once, in the background,
   whether your copy is behind, and the first tool result of the session says so.
   One request to the public GitHub API; nothing about you, your machine or your

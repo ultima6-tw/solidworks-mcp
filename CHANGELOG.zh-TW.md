@@ -23,6 +23,10 @@ English: [CHANGELOG.md](CHANGELOG.md).
 - **建議更新——`linear_pattern` 設 `{"axis": "X"}` 可能往 −X 排。** SOLIDWORKS 沿著給它的那條邊
   的方向排列，工具以前用找到的第一條平行邊；在一般方塊上實測，X 和 Z 都排反了。現在 `{"axis": ...}`
   一律往 +軸，`reverseDir1`／`reverseDir2` 往 −軸，兩個陣列方向都是。
+- **建議更新——特徵工具不再讓 SOLIDWORKS 一直累積 handle。** SOLIDWORKS 交給 server 的每個 COM 物件，
+  都會在 SOLIDWORKS 程序裡留下永遠不釋放的 handle，而 server 每次呼叫後的檢查會把整棵特徵樹走好幾遍。
+  長時間測試下 SOLIDWORKS 累積到將近 300 萬個 handle，零件越大每次呼叫也越慢。
+  現在檢查只讀最後幾個特徵：60 個特徵的零件上除料一次，handle 約只剩原本的五分之一，時間從約 6 秒降到約 2 秒。
 - **啟動時檢查更新。** server 啟動後在背景問 GitHub 一次，你這份是不是舊版；是的話，這次
   使用的第一個工具回傳會附上提醒。只送出一個公開的 GitHub API 查詢，不會送出任何跟你、你的
   電腦或文件有關的資料。用 `SOLIDWORKS_MCP_UPDATE_CHECK=0` 關掉。詳見

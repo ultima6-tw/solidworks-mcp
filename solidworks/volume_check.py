@@ -120,18 +120,17 @@ def _absorbed_sketch(feat):
 PATTERN_TOOLS = ("solidworks_linear_pattern", "solidworks_circular_pattern", "solidworks_mirror")
 
 
-def new_solid_features(doc, new_feature_names):
-    """The new top-level features that are not sketches, in tree order."""
+def new_solid_features(new_feats):
+    """The new top-level features (feature_errors.new_features(), tree order)
+    that are not sketches. Takes the objects instead of walking the tree:
+    every feature object fetched costs SOLIDWORKS handles it never frees."""
     feats = []
-    f = doc.FirstFeature
-    while f is not None:
+    for f in new_feats or []:
         try:
-            if f.Name in new_feature_names and f.GetTypeName2 not in ("ProfileFeature",
-                                                                       "3DProfileFeature"):
+            if f.GetTypeName2 not in ("ProfileFeature", "3DProfileFeature"):
                 feats.append(f)
         except Exception:
             pass
-        f = f.GetNextFeature
     return feats
 
 
@@ -158,7 +157,7 @@ def _seed_name(ref):
     return s.split(":", 1)[1] if s.startswith("feat:") else s
 
 
-def expectation(doc, tool, args, new_feature_names, seed_changes=None):
+def expectation(doc, tool, args, new_feats, seed_changes=None):
     """What the change should be, or why that is not known.
     Returns (exp, None) with exp = {"delta": signed expected change,
     "upper": largest plausible |change| or None, "basis": text}, or
@@ -175,7 +174,7 @@ def expectation(doc, tool, args, new_feature_names, seed_changes=None):
         # The new feature is the one new top-level feature that is not a
         # sketch (the sketch existed before; a cut's failed first attempt is
         # deleted).
-        feats = new_solid_features(doc, new_feature_names)
+        feats = new_solid_features(new_feats)
         if len(feats) != 1:
             return None, "could not tell which new feature to measure"
         sketch = _absorbed_sketch(feats[0])

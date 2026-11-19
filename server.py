@@ -13,7 +13,7 @@ import asyncio
 from pathlib import Path
 import pythoncom
 
-from solidworks.feature_errors import check_new_features, describe, feature_names
+from solidworks.feature_errors import check_new_features, describe, new_features, snapshot
 from solidworks import update_check, volume_check
 from solidworks.com_utils import com_prop
 from solidworks import (
@@ -229,13 +229,16 @@ class SolidWorksMCPServer:
         # Every tool of a feature-creating module gets the feature error check:
         # SOLIDWORKS can return a feature that is in error or carries a warning
         # and did nothing, while the tool reports success (see feature_errors).
+        # The snapshot reads only the last few features (feature_errors.
+        # snapshot): every feature object fetched costs SOLIDWORKS handles it
+        # never frees, so walking the whole tree on every call added up.
         doc, names_before = None, None
         if module in (self.modeling, self.features, self.cut_features, self.applied_features,
                       self.patterns, self.hole_features, self.reference_geometry):
             try:
                 doc = self.connection.get_active_doc()
                 if doc is not None and int(com_prop(doc, "GetType")) in (1, 2):
-                    names_before = feature_names(doc)
+                    names_before = snapshot(doc)
             except Exception as e:
                 logger.debug(f"feature snapshot before {name} skipped: {e}")
                 names_before = None
@@ -258,12 +261,22 @@ class SolidWorksMCPServer:
             out = module.execute(name, arguments)
         if names_before is None:
             return out
-        out = self._apply_feature_check(name, doc, names_before, out)
+        try:
+            new_feats = new_features(doc, names_before)
+        except Exception as e:
+            logger.warning(f"new features after {name} could not be read: {e}")
+            new_feats = None
+        if new_feats is None:
+            logger.info(f"{name}: could not tell which features are new (the last features "
+                        f"before the call are gone); feature error check skipped")
+        out = self._apply_feature_check(name, doc, names_before, out, new_feats or [])
         if vol_before is None:
             return out
-        return self._apply_volume_check(name, arguments, doc, names_before, vol_before, out)
+        return self._apply_volume_check(name, arguments, doc, names_before, vol_before, out,
+                                        new_feats or [])
 
-    def _apply_volume_check(self, name, arguments, doc, names_before, vol_before, out):
+    def _apply_volume_check(self, name, arguments, doc, names_before, vol_before, out,
+                            new_feats=None):
         """Report the solid's volume before/after; ⚠ when it did not change or
         changed the wrong way, or more than expected (BLIND extrude/cut:
         profile area x depth; pattern/mirror: the seeds' recorded change x
@@ -273,7 +286,8 @@ class SolidWorksMCPServer:
             vol_after = volume_check.total_volume_mm3(doc)
             if vol_after is None:
                 return out
-            new_names = feature_names(doc) - set(names_before)
+            if new_feats is None:
+                new_feats = new_features(doc, names_before) or []
             records = {}
             if self.tracker:
                 try:
@@ -281,15 +295,15 @@ class SolidWorksMCPServer:
                 except Exception:
                     records = {}
             seed_changes = {n: r.volume_change for n, r in records.items() if r.volume_change}
-            exp, reason = volume_check.expectation(doc, name, arguments, new_names, seed_changes)
+            exp, reason = volume_check.expectation(doc, name, arguments, new_feats, seed_changes)
             rec, warning, info = volume_check.evaluate(name, arguments, vol_before, vol_after,
                                                        exp, reason)
-            new_feats = volume_check.new_solid_features(doc, new_names)
-            if len(new_feats) == 1 and new_feats[0].Name in records:
+            solid = volume_check.new_solid_features(new_feats)
+            if len(solid) == 1 and solid[0].Name in records:
                 nominal = (exp or {}).get("upper") if name in (
                     "solidworks_create_extrusion", "solidworks_create_cut_extrusion") else None
-                records[new_feats[0].Name].volume_change = {"delta": vol_after - vol_before,
-                                                            "nominal": nominal}
+                records[solid[0].Name].volume_change = {"delta": vol_after - vol_before,
+                                                        "nominal": nominal}
         except Exception as e:
             logger.warning(f"volume check after {name} failed: {e}")
             return out
@@ -297,12 +311,16 @@ class SolidWorksMCPServer:
             logger.warning(f"Volume check after {name}: {warning} ({rec})")
         return volume_check.annotate(out, rec, warning, info)
 
-    def _apply_feature_check(self, name, doc, names_before, out):
+    def _apply_feature_check(self, name, doc, names_before, out, new_feats=None):
         """Errors: the feature is removed and the call fails. Warnings: the
-        feature is kept and the result is marked ⚠ with the official text."""
+        feature is kept and the result is marked ⚠ with the official text.
+        names_before: a feature_errors.snapshot() or a set of names; new_feats
+        (new_features() of it) is read here when not given."""
         import json as _json
         try:
-            errors, warnings = check_new_features(doc, names_before, self.tracker)
+            if new_feats is None:
+                new_feats = new_features(doc, names_before) or []
+            errors, warnings = check_new_features(doc, new_feats, self.tracker)
         except Exception as e:
             logger.warning(f"feature error check after {name} failed: {e}")
             return out
