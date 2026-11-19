@@ -202,6 +202,7 @@ All tools accept both tracked IDs and raw SolidWorks names. When raw names are u
 - Recovered features are genuinely drivable: `set_parameter("D1@Fillet1", …)` rebuilds and moves the volume as expected.
 - **Recognized sketches are constrained but NOT dimensioned** — there are no `D<i>@Sketch<n>` dimensions, so cut/boss *profiles* cannot be driven numerically. Change those by editing sketch geometry or by direct face editing.
 - Cost: ~6s on a simple part, ~2.5 min on a 435-face one. Volume is preserved to ~0.001%.
+- **`LoadAddIn` can report success without starting it** (SW2022, measured): in some SOLIDWORKS sessions `LoadAddIn` returns 0 (swSuccess) or 2 (already loaded) and `GetAddInObject` still returns None, even after waiting; `UnloadAddIn` + `LoadAddIn` does not help. Ticking FeatureWorks in Tools > Add-Ins, or starting SOLIDWORKS with its Start Up box ticked, does. Why some sessions behave so is not known. `_get_featureworks` returns the reason and the error tells the user to tick it (and tells a missing dll and swLicenseError 7 apart).
 - **First call after FeatureWorks loads returns 0** (SW2022, measured): when the add-in is loaded for the first time in a SOLIDWORKS session (`LoadAddIn` → 0), the first `RecognizeFeatureAutomatic` returns 0 and `CreateFeatures` does nothing; an immediate second call recognizes normally. `recognize_features` therefore calls it a second time when the first returns 0.
 
 ### Assembly Tools

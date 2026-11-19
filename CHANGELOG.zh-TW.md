@@ -10,6 +10,9 @@ English: [CHANGELOG.md](CHANGELOG.md).
 
 ## 2026-11-19
 
+- `recognize_features`：SOLIDWORKS 回報 FeatureWorks 已載入、但其實沒有啟動時（在 SOLIDWORKS 2022 實測過），
+  錯誤訊息現在會說明這個情況，並請使用者在「工具 → 附加程式」勾選 FeatureWorks。以前一律說需要 Professional
+  或 Premium 授權，但問題不在那裡。沒安裝 FeatureWorks 和授權錯誤現在也會分開說明。
 - SOLIDWORKS 視窗比較小時，在其他圖形旁邊畫小圖形不會再失敗。吸附範圍是固定的螢幕像素數，視窗越小
   （或縮得越遠），換算成毫米就越遠；在 SOLIDWORKS 2022 實測，視窗 1024×640 或 1536×960 時，在兩個小圓
   下方畫 7×14 mm 的長方形，SOLIDWORKS 什麼都沒畫，工具回報錯誤。現在工具會關掉吸附再畫一次，跟原本

@@ -35,6 +35,7 @@ Feature recognition (FeatureWorks):
 
 import json
 import logging
+import os
 from pathlib import Path
 import pythoncom
 import win32com.client
@@ -623,19 +624,42 @@ class DocumentManagerTools:
         return out
 
     def _get_featureworks(self):
-        """Load the FeatureWorks add-in and return IFeatureWorksApp, or None.
-        LoadAddIn returns 0 on a fresh load and 2 when already loaded."""
+        """Load the FeatureWorks add-in; return (IFeatureWorksApp, None) or
+        (None, why it is not available).
+
+        LoadAddIn returns swLoadAddinError_e: 0 on a fresh load, 2 when
+        already loaded, 7 on a license error. Probed on SW2022: in some
+        SOLIDWORKS sessions LoadAddIn returns 0 / 2 and GetAddInObject still
+        returns None -- the add-in is not really started. Ticking FeatureWorks
+        in Tools > Add-Ins (or starting SOLIDWORKS with its Start Up box
+        ticked) makes it work; the API cannot do that, so the user is told."""
         sw = self.connection.app
+        if not os.path.exists(FWORKS_DLL):
+            return None, (f"FeatureWorks is not installed ({FWORKS_DLL} not found). It ships "
+                          f"with SOLIDWORKS Professional and Premium.")
+        status = None
         try:
             status = sw.LoadAddIn(FWORKS_DLL)
             logger.info(f"FeatureWorks LoadAddIn -> {status}")
         except Exception as e:
             logger.warning(f"FeatureWorks LoadAddIn failed: {e}")
         try:
-            return sw.GetAddInObject(FWORKS_PROGID)
+            fw = sw.GetAddInObject(FWORKS_PROGID)
         except Exception as e:
             logger.warning(f"GetAddInObject({FWORKS_PROGID}) failed: {e}")
-            return None
+            fw = None
+        if fw is not None:
+            return fw, None
+        if status == 7:   # swLicenseError
+            return None, ("SOLIDWORKS refused to load FeatureWorks: license error. It needs "
+                          "SOLIDWORKS Professional or Premium.")
+        if status in (0, 2):
+            return None, ("FeatureWorks is installed and SOLIDWORKS reports it loaded, but it "
+                          "is not started (SOLIDWORKS gives no FeatureWorks object). Ask the "
+                          "user to tick FeatureWorks in SOLIDWORKS > Tools > Add-Ins -- both "
+                          "boxes, so it also starts with SOLIDWORKS next time -- then try again.")
+        return None, (f"SOLIDWORKS could not load FeatureWorks (LoadAddIn returned {status}, "
+                      f"swLoadAddinError_e).")
 
     def _run_recognition(self, doc, feature_types, add_constraints: bool) -> dict:
         unknown = [t for t in feature_types if t.upper() not in FW_TYPES]
@@ -648,13 +672,12 @@ class DocumentManagerTools:
         for t in feature_types:
             mask |= FW_TYPES[t.upper()]
 
-        fw = self._get_featureworks()
+        fw, why = self._get_featureworks()
         if fw is None:
             raise Exception(
-                "FeatureWorks is not available. It ships with SOLIDWORKS but "
-                "requires a Professional or Premium license. Without it an "
-                "imported body stays a dumb solid — it can still be measured, "
-                "cut, filleted and direct-edited, just not driven by dimensions."
+                f"FeatureWorks is not available: {why} Without it an imported "
+                "body stays a dumb solid — it can still be measured, cut, "
+                "filleted and direct-edited, just not driven by dimensions."
             )
 
         before = self._feature_tree(doc)

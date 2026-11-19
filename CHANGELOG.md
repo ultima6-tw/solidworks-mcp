@@ -11,6 +11,11 @@ not have — see [INSTALL.md › Updates](INSTALL.md#updates).
 
 ## 2026-11-19
 
+- `recognize_features`: when SOLIDWORKS reports FeatureWorks loaded but does
+  not actually start it (seen on SOLIDWORKS 2022), the error now says so and
+  asks to tick FeatureWorks in Tools › Add-Ins. It used to say a Professional
+  or Premium license was needed, which was not the problem. A missing
+  FeatureWorks and a license error are now told apart too.
 - Sketch tools no longer fail on a small shape next to other geometry when
   the SOLIDWORKS window is small. Snapping reaches a fixed number of screen
   pixels, so in a smaller window (or zoomed further out) it reaches further in

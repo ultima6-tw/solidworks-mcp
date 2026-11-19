@@ -44,6 +44,11 @@ also follow it yourself.
 - **Windows** with **SOLIDWORKS** installed and activated. This fork is tested
   only on SOLIDWORKS 2022 SP04 with a Traditional Chinese interface (see
   [TESTING.md](TESTING.md)); the original project was tested on SOLIDWORKS 2025.
+- For `recognize_features` (turning an imported STEP/IGES body back into
+  features): FeatureWorks, which comes with SOLIDWORKS Professional and
+  Premium. Tick it in SOLIDWORKS › Tools › Add-Ins, both boxes (active now and
+  Start Up). Seen on SOLIDWORKS 2022: loading it from the server alone
+  sometimes reports success without starting it.
 - **Python 3.10 or later**, 64-bit. Tested with 3.12 and 3.13.
 - An AI app that supports local MCP servers over stdio: Claude Desktop, Claude
   Code, Codex, or another MCP client.

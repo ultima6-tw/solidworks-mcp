@@ -32,6 +32,9 @@
 
 - **Windows**，並已安裝、啟用 **SOLIDWORKS**。這個 fork 只在 SOLIDWORKS 2022 SP04 繁體中文介面
   上測試過（見 [TESTING.zh-TW.md](TESTING.zh-TW.md)）；原版專案是在 SOLIDWORKS 2025 上測試的。
+- 要用 `recognize_features`（把匯入的 STEP/IGES 實體辨識回特徵）：需要 FeatureWorks，SOLIDWORKS
+  Professional 和 Premium 有附。請在 SOLIDWORKS 的「工具 → 附加程式」把它兩格都勾起來（目前啟用、啟動時
+  載入）。在 SOLIDWORKS 2022 實測過：只靠 server 載入，有時會回報成功卻沒有真的啟動。
 - **Python 3.10 以上**，64 位元。測試過 3.12 和 3.13。
 - 支援本機 stdio MCP server 的 AI 程式：Claude Desktop、Claude Code、Codex，或其他 MCP client。
 
