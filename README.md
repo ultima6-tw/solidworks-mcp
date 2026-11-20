@@ -6,16 +6,69 @@ This is, as far as I can tell, the most complete MCP server for SolidWorks avail
 
 > **About this fork.** This is a maintained fork of
 > [HarrierPigeon/Solidworks-MCP-Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server)
-> by Joseph Robertson, who wrote the server and most of this README. It adds
-> support for localized (non-English) SOLIDWORKS, an [SSH mode](INSTALL.md#local-or-ssh),
-> SOLIDWORKS CAM tools (stock → toolpaths → simulation → G-code), DXF export,
-> assembly bounding boxes, window screenshots, an opt-in `execute_python`, and
-> fixes found by testing every tool on SOLIDWORKS 2022 — see [Credits](#credits)
-> and [TESTING.md](TESTING.md). What changed: [CHANGELOG.md](CHANGELOG.md).
+> by Joseph Robertson, who wrote the server and most of this README. What it
+> adds: [How this fork differs](#how-this-fork-differs-from-the-original);
+> who did what: [Credits](#credits); every change: [CHANGELOG.md](CHANGELOG.md).
 > 繁體中文說明：[INSTALL.zh-TW.md](INSTALL.zh-TW.md)、[TESTING.zh-TW.md](TESTING.zh-TW.md)、
 > [CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md).
 
 The connected AI client gets a broad tool set covering sketching, solid features, assemblies with mates, configurations, equations, neutral-format import/export, and — critically — *feedback*: it can query faces and edges, check mass properties, detect interference, and take labeled screenshots of the model to see what it's actually building.
+
+## How this fork differs from the original
+
+Compared with [HarrierPigeon/Solidworks-MCP-Server](https://github.com/HarrierPigeon/Solidworks-MCP-Server)
+at its latest commit (`60c11fe`, 2026-08-07); counted on 2026-11-20. The
+original has no commits this fork lacks.
+
+| | Original | This fork |
+|---|---|---|
+| Tools | 95 | 105 — all of the original's, plus 10 |
+| Automated tests (`test.py`) | 45 | 90 |
+| Tested on | SOLIDWORKS 2025 | SOLIDWORKS 2022 SP04, Traditional Chinese interface |
+
+**Tool results you can trust.** The original reports ✓ whenever SOLIDWORKS
+does not raise an error, but SOLIDWORKS often returns a feature that did
+nothing. This fork checks the result itself:
+
+- **Feature error state** — after every feature tool the server reads the new
+  features' error codes. A Through-All cut or boss pointing away from the body,
+  or a pattern whose copies land outside it, used to report ✓; now the call
+  fails (or comes back ⚠) with SOLIDWORKS's own description of the error.
+- **Volume before and after** — a tool that should change the solid but did
+  not, or changed it the wrong way, comes back ⚠. For BLIND extrusions and cuts,
+  and for patterns and mirrors, the tool also works out the expected change and
+  compares.
+- **Sketch read-back** — when zoomed out, SOLIDWORKS snaps new sketch entities
+  onto nearby geometry and silently changes their size or position (a radius
+  1.7 circle came out 3.5). Sketch tools read the geometry back and redraw it
+  with snapping off.
+- **Per-tool fixes** found by testing every tool on SOLIDWORKS 2022: extrusion
+  `reverse`, `linear_pattern` axis direction, equal-distance chamfer, inscribed
+  polygon, draft, rib, wrap, boundary boss/cut, cut loft, hole wizard, cosmetic
+  thread and more — see [CHANGELOG.md](CHANGELOG.md).
+
+**New tools.** SOLIDWORKS CAM, 6 tools from stock to G-code; `export_dxf` (a
+planar face → 1:1 DXF for laser or waterjet cutting); `get_assembly_bounding_box`;
+`screenshot` (the whole SOLIDWORKS window); and `execute_python`, off by default.
+
+**Runs in more setups.** Localized (non-English) SOLIDWORKS; an
+[SSH mode](INSTALL.md#local-or-ssh) for AI apps running in a remote or SSH
+session; MCP SDK pinned to 1.x, since 2.x removed APIs the server uses.
+
+**Long sessions.** Every COM object SOLIDWORKS hands to the server leaves
+handles in SOLIDWORKS that are never freed. Several original tools fetched
+every feature to find the newest sketch, and this fork's first version of the
+checks above walked the whole feature tree several times per call, so a long
+session piled up millions of handles and every call got slower as the part
+grew. Tools now read only the newest features: on a 60-feature part a cut
+costs ~300 handles instead of ~6000.
+
+**Documentation and upkeep.** [INSTALL.md](INSTALL.md) is written for the AI
+doing the setup (there is no installer script); [TESTING.md](TESTING.md) says
+what is tested and what is known to be unreliable;
+[CHANGELOG.md](CHANGELOG.md) marks the fixes worth updating for; at start-up
+the server checks GitHub once and tells you when your copy is behind. All
+three documents are also in Traditional Chinese.
 
 ## What it can do
 
